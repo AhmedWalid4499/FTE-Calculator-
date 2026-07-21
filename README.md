@@ -5,7 +5,7 @@ Enter the sites, the products or device tiers and the duration; it returns the
 man-days, the FTE and the headcount — and shows its full working, so every
 number can be checked by hand.
 
-**▶ Use it here: <https://USERNAME.github.io/REPO/>**
+**▶ Use it here: <https://ahmedwalid4499.github.io/FTE-Calculator-/>**
 
 No installation, no account, no server. Everything runs in your browser and
 your data never leaves your machine.
