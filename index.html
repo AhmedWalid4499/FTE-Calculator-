@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DPM FTE Calculator</title>
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ══════════════════════════════════════════════════ SIDEBAR ══════ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">🌐</div>
+      <h1>DPM FTE</h1>
+      <div class="brand-sub">Network Estimator</div>
+    </div>
+
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">Estimate</div>
+      <button class="nav-item active" data-page="dashboard"><span class="nav-ic">▦</span><span>Dashboard</span></button>
+      <button class="nav-item" data-page="wan"><span class="nav-ic">◎</span><span>WAN Estimator</span></button>
+      <button class="nav-item" data-page="lan"><span class="nav-ic">⬡</span><span>LAN Estimator</span></button>
+
+      <div class="nav-sep"></div>
+      <div class="nav-section">Data</div>
+      <button class="nav-item" data-page="records"><span class="nav-ic">🗄</span><span>FTE Records</span></button>
+      <button class="nav-item" data-page="projects"><span class="nav-ic">⊞</span><span>Projects</span></button>
+      <button class="nav-item" data-page="dpms"><span class="nav-ic">👤</span><span>DPM Directory</span></button>
+
+      <div class="nav-sep"></div>
+      <div class="nav-section">Help</div>
+      <button class="nav-item" data-page="reference"><span class="nav-ic">📖</span><span>Rates &amp; Method</span></button>
+      <button class="nav-item" data-page="settings"><span class="nav-ic">⚙</span><span>Settings</span></button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="nav-item" id="theme-toggle"><span class="nav-ic" id="theme-icon">☀</span><span id="theme-label">Switch to dark</span></button>
+    </div>
+  </aside>
+
+  <!-- ══════════════════════════════════════════════════════ MAIN ══════ -->
+  <main class="main">
+
+    <header class="topbar">
+      <span class="topbar-title" id="page-title">Dashboard</span>
+      <div class="topbar-right">
+        <div class="status-chip" id="storage-chip" title="Where your calculations are being saved">
+          <span class="status-dot off" id="storage-dot"></span>
+          <span id="storage-text">Checking storage…</span>
+        </div>
+        <div class="status-chip" id="result-chip">
+          <span class="status-dot off" id="result-dot"></span>
+          <span id="result-text">No calculation yet</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ═══════════════════════════════════════════════ DASHBOARD ══════ -->
+    <section class="page active" id="page-dashboard">
+      <div class="page-head">
+        <h2>Dashboard</h2>
+        <p>The most recent WAN and LAN estimates, and how the effort is spread across the project calendar.</p>
+      </div>
+
+      <div id="dash-empty"></div>
+
+      <div id="dash-content" class="hidden">
+        <div class="divider"><span>Latest WAN estimate</span></div>
+        <div class="kpi-row" id="dash-wan-kpis"></div>
+
+        <div class="divider"><span>Latest LAN estimate</span></div>
+        <div class="kpi-row" id="dash-lan-kpis"></div>
+
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot"></span>WAN — man-days by product</div>
+            <div class="chart-box"><canvas id="dash-wan-chart"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot g"></span>LAN — man-days by tier</div>
+            <div class="chart-box"><canvas id="dash-lan-chart"></canvas></div>
+          </div>
+        </div>
+
+        <div class="chart-card mb-3">
+          <div class="chart-title"><span class="dot a"></span>Monthly effort distribution — combined</div>
+          <div class="chart-box"><canvas id="dash-monthly-chart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="divider"><span>How this tool works</span></div>
+      <div class="card flush">
+        <div class="getting-started">
+          <div class="gs-card">
+            <div class="gs-title"><span class="gs-num">1</span>Describe the project</div>
+            <div class="gs-body">Name it, set how long it runs and how many sites it covers. Duration can be entered directly in months or derived from a start and end date.</div>
+          </div>
+          <div class="gs-card">
+            <div class="gs-title"><span class="gs-num">2</span>Allocate the sites</div>
+            <div class="gs-body">Split the total across products and connectivity modes (WAN) or device tiers (LAN). The allocation must add up to the total before the estimate will run.</div>
+          </div>
+          <div class="gs-card">
+            <div class="gs-title"><span class="gs-num">3</span>Calculate</div>
+            <div class="gs-body">Every calculation is saved automatically and shows its full working, so any number can be traced back to the rate card.</div>
+          </div>
+        </div>
+        <div class="callout mt-4">
+          <span class="callout-ic">📖</span>
+          <span>Unsure what a term means or where a rate comes from? <b>Rates &amp; Method</b> in the sidebar lists every published rate, the effort formula and a glossary.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═════════════════════════════════════════════════════ WAN ══════ -->
+    <section class="page" id="page-wan">
+      <div class="page-head">
+        <h2>WAN Estimator</h2>
+        <p>Estimates DPM effort for wide-area network rollouts, priced per site from the product and connectivity mode.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Project information</div>
+          <span class="project-code-pill hidden" id="w-code-pill"></span>
+        </div>
+        <div class="grid g3">
+          <div class="field">
+            <label for="w-proj-name" data-help="projectName">Project name</label>
+            <input type="text" id="w-proj-name" placeholder="e.g. Q3 WAN EMEA Rollout" autocomplete="off">
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="status">Project status <span class="tag tag-muted">recorded only</span></span>
+            <div class="segmented" id="w-status" role="group" aria-label="Project status">
+              <button type="button" data-val="Active" class="active">Active</button>
+              <button type="button" data-val="Inactive">Inactive</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="pmRole">DPM acting as PM <span class="tag tag-muted">recorded only</span></span>
+            <div class="segmented" id="w-pm-role" role="group" aria-label="DPM acting as PM">
+              <button type="button" data-val="No" class="active">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field mb-3">
+          <span class="field-label" data-help="duration">Duration</span>
+          <div class="tabbar" style="max-width:340px" id="w-dur-tabs">
+            <button type="button" class="active" data-dur="months">Enter months</button>
+            <button type="button" data-dur="dates">Start / end date</button>
+          </div>
+        </div>
+        <div class="grid g3" id="w-dur-months">
+          <div class="field">
+            <label for="w-months">Duration in months</label>
+            <input type="number" id="w-months" placeholder="e.g. 6" min="0.1" step="0.1">
+            <span class="field-help">Total effort is spread evenly across this period.</span>
+          </div>
+        </div>
+        <div class="grid g3 hidden" id="w-dur-dates">
+          <div class="field"><label for="w-start-date">Start date</label><input type="date" id="w-start-date"></div>
+          <div class="field"><label for="w-end-date">End date</label><input type="date" id="w-end-date"></div>
+          <div class="field"><span class="field-label">Derived duration</span><span class="project-code-pill" id="w-dur-derived">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Project parameters</div></div>
+        <div class="grid g3">
+          <div class="field">
+            <label for="w-sites" data-help="totalSites">Total sites</label>
+            <input type="number" id="w-sites" placeholder="e.g. 100" min="1" step="1">
+            <span class="field-help">Your allocation rows must add up to this number.</span>
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="migration">Migration support</span>
+            <div class="segmented" id="w-migration" role="group" aria-label="Migration support">
+              <button type="button" data-val="No" class="active">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+            <span class="field-help">Adds <b>0.5 MD per site</b> across the whole project when set to Yes.</span>
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="calcMode">Calculation mode</span>
+            <div class="segmented" id="w-mode" role="group" aria-label="Calculation mode">
+              <button type="button" data-val="Standard" class="active">Standard</button>
+              <button type="button" data-val="Non-standard">Non-standard</button>
+            </div>
+            <span class="field-help" id="w-mode-help">Rates come from the published rate card.</span>
+          </div>
+        </div>
+
+        <div class="callout neutral">
+          <span class="callout-ic">ℹ</span>
+          <span>The fields below are stored with the estimate and appear in exports for reporting, but they do <b>not</b> change the calculated effort.</span>
+        </div>
+        <div class="grid g3 mb-0">
+          <div class="field">
+            <label for="w-type" data-help="projectType">Project type <span class="tag tag-muted">recorded only</span></label>
+            <select id="w-type"><option>Overlay</option><option>Underlay</option><option>Both</option></select>
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="abacos">ABACOS <span class="tag tag-muted">recorded only</span></span>
+            <div class="segmented" id="w-abacos" role="group" aria-label="ABACOS">
+              <button type="button" data-val="No" class="active">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+          </div>
+          <div class="field"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="dot v"></span>Assigned DPMs <span class="tag tag-muted">recorded only</span></div>
+          <button class="btn btn-outline btn-sm" id="w-assign-dpms">+ Assign DPMs</button>
+        </div>
+        <div id="w-dpm-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Site allocation by product</div></div>
+        <p class="card-note">
+          Add one row per group of sites that share a product, connectivity mode and complexity.
+          Effort for a row is <b>base rate × complexity × sites</b>, where the base rate is the
+          published man-days per site for that product and mode.
+        </p>
+        <div class="grid g5">
+          <div class="field"><label for="w-add-product">Product</label><select id="w-add-product"></select></div>
+          <div class="field"><label for="w-add-mode">Connectivity mode</label><select id="w-add-mode"></select></div>
+          <div class="field"><label for="w-add-sites" data-help="sitesRow">Sites</label><input type="number" id="w-add-sites" placeholder="0" min="1" step="1"></div>
+          <div class="field"><label for="w-add-complexity" data-help="complexity">Complexity %</label><input type="number" id="w-add-complexity" placeholder="100" min="1" max="500" step="1"></div>
+          <div class="field hidden" id="w-override-field"><label for="w-add-override" data-help="override">Override MD/site</label><input type="number" id="w-add-override" placeholder="0.000" min="0" step="0.001"></div>
+        </div>
+        <div class="btn-row mt-2">
+          <button class="btn btn-primary" id="w-add-row">+ Add allocation row</button>
+          <span class="grow"></span>
+          <button class="btn btn-danger btn-sm" id="w-clear-rows">Clear all rows</button>
+        </div>
+        <div class="mt-3" id="w-alloc-badge"></div>
+        <div class="table-wrap mt-2" id="w-alloc-anchor">
+          <table id="w-alloc-table">
+            <thead><tr>
+              <th class="center">#</th>
+              <th data-sort-key="product">Product</th>
+              <th data-sort-key="mode">Connectivity mode</th>
+              <th class="right" data-sort-key="sites">Sites</th>
+              <th class="right" data-sort-key="complexity">Complexity</th>
+              <th class="right" data-sort-key="rate">Base rate <span class="th-unit">MD per site</span></th>
+              <th class="right" data-sort-key="md">Row effort <span class="th-unit">man-days</span></th>
+              <th>Share of total</th>
+              <th class="center">Actions</th>
+            </tr></thead>
+            <tbody id="w-alloc-body"></tbody>
+            <tfoot id="w-alloc-foot"></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="w-results" class="hidden">
+        <div class="divider"><span>Result</span></div>
+        <div class="result-box" id="w-result-box"></div>
+        <div class="chart-grid-2 mt-3">
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot"></span>Man-days by product</div>
+            <div class="chart-box"><canvas id="w-chart-products"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot a"></span>Man-days per month</div>
+            <div class="chart-box"><canvas id="w-chart-monthly"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"><span>Actions</span></div>
+      <div class="btn-row">
+        <button class="btn btn-primary btn-lg" id="w-calculate">Calculate WAN FTE</button>
+        <button class="btn btn-outline" id="w-export">↓ Export to Excel</button>
+        <button class="btn btn-ghost" id="w-save-project">⊞ Save as project</button>
+      </div>
+    </section>
+
+    <!-- ═════════════════════════════════════════════════════ LAN ══════ -->
+    <section class="page" id="page-lan">
+      <div class="page-head">
+        <h2>LAN Estimator</h2>
+        <p>Estimates DPM effort for local-area network rollouts, priced per site from the device-count tier.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Project information</div>
+          <span class="project-code-pill hidden" id="l-code-pill"></span>
+        </div>
+        <div class="grid g3">
+          <div class="field">
+            <label for="l-proj-name" data-help="projectName">Project name</label>
+            <input type="text" id="l-proj-name" placeholder="e.g. Q3 LAN Cairo Rollout" autocomplete="off">
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="status">Project status <span class="tag tag-muted">recorded only</span></span>
+            <div class="segmented" id="l-status" role="group" aria-label="Project status">
+              <button type="button" data-val="Active" class="active">Active</button>
+              <button type="button" data-val="Inactive">Inactive</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="pmRole">DPM acting as PM <span class="tag tag-muted">recorded only</span></span>
+            <div class="segmented" id="l-pm-role" role="group" aria-label="DPM acting as PM">
+              <button type="button" data-val="No" class="active">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="field mb-3">
+          <span class="field-label" data-help="duration">Duration</span>
+          <div class="tabbar" style="max-width:340px" id="l-dur-tabs">
+            <button type="button" class="active" data-dur="months">Enter months</button>
+            <button type="button" data-dur="dates">Start / end date</button>
+          </div>
+        </div>
+        <div class="grid g3" id="l-dur-months">
+          <div class="field">
+            <label for="l-months">Duration in months</label>
+            <input type="number" id="l-months" placeholder="e.g. 6" min="0.1" step="0.1">
+            <span class="field-help">Total effort is spread evenly across this period.</span>
+          </div>
+        </div>
+        <div class="grid g3 hidden" id="l-dur-dates">
+          <div class="field"><label for="l-start-date">Start date</label><input type="date" id="l-start-date"></div>
+          <div class="field"><label for="l-end-date">End date</label><input type="date" id="l-end-date"></div>
+          <div class="field"><span class="field-label">Derived duration</span><span class="project-code-pill" id="l-dur-derived">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Project parameters</div></div>
+        <div class="grid g3">
+          <div class="field">
+            <label for="l-sites" data-help="totalSites">Total sites</label>
+            <input type="number" id="l-sites" placeholder="e.g. 50" min="1" step="1">
+            <span class="field-help">Your tier rows must add up to this number.</span>
+          </div>
+          <div class="field">
+            <label for="l-devices" data-help="routers">Device count <span class="tag tag-muted">fallback only</span></label>
+            <input type="number" id="l-devices" placeholder="0" min="0" step="1">
+            <span class="field-help">Used only when no tier rows are entered.</span>
+          </div>
+          <div class="field">
+            <span class="field-label" data-help="flan">FLAN used <span class="tag tag-muted">recorded only</span></span>
+            <div class="segmented" id="l-flan" role="group" aria-label="FLAN used">
+              <button type="button" data-val="No" class="active">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid g2">
+          <div class="field">
+            <span class="field-label" data-help="calcMode">Calculation mode</span>
+            <div class="segmented" id="l-mode" role="group" aria-label="Calculation mode">
+              <button type="button" data-val="Standard" class="active">Standard</button>
+              <button type="button" data-val="Non-standard">Non-standard</button>
+              <button type="button" data-val="By Stage">By Stage</button>
+            </div>
+            <span class="field-help" id="l-mode-help">Rates come from the published tier rate card.</span>
+          </div>
+          <div class="field hidden" id="l-fb-field">
+            <label for="l-fb-ovrd">Fallback override MD/site</label>
+            <input type="number" id="l-fb-ovrd" placeholder="0.000" min="0" step="0.001">
+            <span class="field-help">Applies only when no tier rows are entered.</span>
+          </div>
+        </div>
+
+        <div id="l-stage-section" class="hidden">
+          <div class="divider"><span>Stages in scope</span></div>
+          <p class="card-note">
+            The rate for a site becomes the sum of the hours of every activity in the selected stages,
+            divided by 8 to convert hours into man-days. The figure beside each stage is its cost per
+            site for a medium (M) tier, so you can see the effect of each choice before calculating.
+          </p>
+          <div class="stage-grid" id="l-stages"></div>
+          <div class="btn-row mt-3">
+            <button class="btn btn-outline btn-sm" data-stage-preset="all">All stages</button>
+            <button class="btn btn-outline btn-sm" data-stage-preset="Design,Planning">Design + Planning</button>
+            <button class="btn btn-outline btn-sm" data-stage-preset="Implement,Closing">Implement + Closing</button>
+            <button class="btn btn-danger btn-sm" data-stage-preset="none">Clear</button>
+          </div>
+          <div id="l-stages-anchor"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><span class="dot v"></span>Assigned DPMs <span class="tag tag-muted">recorded only</span></div>
+          <button class="btn btn-outline btn-sm" id="l-assign-dpms">+ Assign DPMs</button>
+        </div>
+        <div id="l-dpm-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Site allocation by tier</div></div>
+        <p class="card-note">
+          Add one row per group of sites in the same size tier. Effort for a row is
+          <b>base rate × complexity × sites</b>. Tiers are determined by how many devices a site has —
+          see <b>Rates &amp; Method</b> for the full table.
+        </p>
+        <div class="grid g4">
+          <div class="field"><label for="l-add-tier">Tier</label><select id="l-add-tier"></select></div>
+          <div class="field"><label for="l-add-sites" data-help="sitesRow">Sites</label><input type="number" id="l-add-sites" placeholder="0" min="1" step="1"></div>
+          <div class="field"><label for="l-add-complexity" data-help="complexity">Complexity %</label><input type="number" id="l-add-complexity" placeholder="100" min="1" max="500" step="1"></div>
+          <div class="field hidden" id="l-override-field"><label for="l-add-override" data-help="override">Override MD/site</label><input type="number" id="l-add-override" placeholder="0.000" min="0" step="0.001"></div>
+        </div>
+        <div class="btn-row mt-2">
+          <button class="btn btn-primary" id="l-add-row">+ Add tier row</button>
+          <span class="grow"></span>
+          <button class="btn btn-danger btn-sm" id="l-clear-rows">Clear all rows</button>
+        </div>
+        <div class="mt-3" id="l-alloc-badge"></div>
+        <div class="table-wrap mt-2" id="l-alloc-anchor">
+          <table id="l-alloc-table">
+            <thead><tr>
+              <th class="center">#</th>
+              <th data-sort-key="tier">Tier</th>
+              <th class="right" data-sort-key="sites">Sites</th>
+              <th class="right" data-sort-key="complexity">Complexity</th>
+              <th class="right" data-sort-key="rate">Base rate <span class="th-unit">MD per site</span></th>
+              <th class="right" data-sort-key="md">Row effort <span class="th-unit">man-days</span></th>
+              <th>Share of total</th>
+              <th class="center">Actions</th>
+            </tr></thead>
+            <tbody id="l-alloc-body"></tbody>
+            <tfoot id="l-alloc-foot"></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div id="l-results" class="hidden">
+        <div class="divider"><span>Result</span></div>
+        <div class="result-box" id="l-result-box"></div>
+        <div class="chart-grid-2 mt-3">
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot g"></span>Man-days by tier</div>
+            <div class="chart-box"><canvas id="l-chart-tiers"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot a"></span>Man-days per month</div>
+            <div class="chart-box"><canvas id="l-chart-monthly"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"><span>Actions</span></div>
+      <div class="btn-row">
+        <button class="btn btn-primary btn-lg" id="l-calculate">Calculate LAN FTE</button>
+        <button class="btn btn-outline" id="l-export">↓ Export to Excel</button>
+        <button class="btn btn-ghost" id="l-save-project">⊞ Save as project</button>
+      </div>
+    </section>
+
+    <!-- ═════════════════════════════════════════════════ RECORDS ══════ -->
+    <section class="page" id="page-records">
+      <div class="page-head">
+        <h2>FTE Records</h2>
+        <p>Every calculation is saved here automatically, together with the inputs that produced it. Nothing is overwritten, so you can see how an estimate changed over time.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Filter</div>
+          <span id="records-count" class="tag tag-muted"></span>
+        </div>
+        <div class="grid g4 mb-0">
+          <div class="field"><label for="rec-search">Search</label><input type="text" id="rec-search" placeholder="Project name or code…" autocomplete="off"></div>
+          <div class="field"><label for="rec-type">Type</label><select id="rec-type"><option value="">All types</option><option>WAN</option><option>LAN</option></select></div>
+          <div class="field"><label for="rec-status">Status</label><select id="rec-status"><option value="">All statuses</option><option>Active</option><option>Inactive</option></select></div>
+          <div class="field"><label for="rec-sort">Sort by</label><select id="rec-sort">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="fte">Highest FTE</option>
+            <option value="md">Highest man-days</option>
+            <option value="name">Project name</option>
+          </select></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Saved calculations</div>
+          <div class="btn-row">
+            <button class="btn btn-outline btn-sm" id="rec-export-all">↓ Export all to Excel</button>
+            <button class="btn btn-outline btn-sm" id="rec-refresh">↻ Refresh</button>
+          </div>
+        </div>
+        <div id="records-list"></div>
+      </div>
+
+      <div class="card mb-0">
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>Portfolio totals — all saved calculations</div></div>
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot"></span>WAN — man-days by product</div>
+            <div class="chart-box"><canvas id="port-wan-md"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot g"></span>LAN — man-days by tier</div>
+            <div class="chart-box"><canvas id="port-lan-md"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot a"></span>WAN — sites by product</div>
+            <div class="chart-box"><canvas id="port-wan-sites"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot v"></span>LAN — sites by tier</div>
+            <div class="chart-box"><canvas id="port-lan-sites"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════ PROJECTS ══════ -->
+    <section class="page" id="page-projects">
+      <div class="page-head">
+        <h2>Projects</h2>
+        <p>Saved input configurations you can reload later. A project stores the settings you typed; an FTE record stores a calculated result.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Saved projects</div>
+          <button class="btn btn-outline btn-sm" id="proj-import-btn">↑ Import JSON</button>
+        </div>
+        <input type="file" id="proj-import-file" accept=".json" class="hidden">
+        <div id="proj-list"></div>
+        <div class="btn-row mt-3">
+          <button class="btn btn-primary btn-sm" id="proj-load">Load into estimator</button>
+          <button class="btn btn-outline btn-sm" id="proj-export">↓ Export to Excel</button>
+          <button class="btn btn-danger btn-sm" id="proj-delete">✕ Delete</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════ DPMS ══════ -->
+    <section class="page" id="page-dpms">
+      <div class="page-head">
+        <h2>DPM Directory</h2>
+        <p>The people who can be assigned to an estimate. Assignments are recorded on the estimate and included in exports.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Manage the list</div>
+          <div class="btn-row">
+            <button class="btn btn-primary btn-sm" id="dpm-add">+ Add DPM</button>
+            <button class="btn btn-outline btn-sm" id="dpm-import-btn">↑ Import</button>
+            <button class="btn btn-outline btn-sm" id="dpm-export-json">↓ JSON</button>
+            <button class="btn btn-outline btn-sm" id="dpm-export">↓ Excel</button>
+          </div>
+        </div>
+        <input type="file" id="dpm-import-file" accept=".json,.csv,.txt" class="hidden">
+        <p class="card-note">
+          This list is yours to edit. Changes are saved in your browser and never
+          alter anyone else's copy. Import accepts a JSON array of
+          <span class="code">{ "name": "...", "email": "..." }</span> or a two-column CSV.
+        </p>
+        <div class="field mb-0"><label for="dpm-search">Filter by name or email</label><input type="text" id="dpm-search" placeholder="Start typing…" autocomplete="off"></div>
+      </div>
+      <div class="card mb-0">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>All DPMs <span id="dpm-count" class="tag tag-muted"></span></div>
+          <button class="btn btn-ghost btn-sm" id="dpm-reset">↻ Restore published list</button>
+        </div>
+        <div class="dpm-grid" id="dpm-directory"></div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════════ REFERENCE ══════ -->
+    <section class="page" id="page-reference">
+      <div class="page-head">
+        <h2>Rates &amp; Method</h2>
+        <p>Every rate this tool uses, the formula it applies, and what each term means. Nothing in the calculation happens outside what is documented on this page.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot c"></span>How an estimate is built</div></div>
+        <div id="method-formula"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>WAN — base effort by product and connectivity mode</div></div>
+        <p class="table-caption">
+          Figures are <b>man-days of DPM effort for a single site</b>, before any complexity multiplier.
+          A dash means that product is not offered with that connectivity mode — it does not mean zero effort.
+        </p>
+        <div class="table-wrap" id="ref-wan-table"></div>
+        <div class="legend">
+          <span><b>—</b> combination not offered</span>
+          <span><b>MD</b> man-day: one person, one full day</span>
+          <span><b>CPE</b> customer premises equipment</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>LAN — base effort by device tier</div></div>
+        <p class="table-caption">
+          A site's tier is decided by how many network devices it contains. In Standard mode the base
+          effort below is used directly; in By Stage mode it is replaced by the stage hours you select.
+        </p>
+        <div class="table-wrap" id="ref-lan-table"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot a"></span>LAN — stage effort detail</div></div>
+        <p class="table-caption">
+          Figures are <b>hours per site</b> for each delivery activity. In By Stage mode the hours of every
+          activity in the selected stages are added together and divided by 8 to produce man-days per site.
+        </p>
+        <div class="tabbar" id="ref-stage-tabs"></div>
+        <div class="table-wrap" id="ref-stage-table"></div>
+      </div>
+
+      <div class="card mb-0">
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>Glossary</div></div>
+        <div class="table-wrap" id="ref-glossary"></div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════ SETTINGS ══════ -->
+    <section class="page" id="page-settings">
+      <div class="page-head">
+        <h2>Settings</h2>
+        <p>Assumptions that apply to every estimate, and where your data is stored.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Calculation assumptions</div></div>
+        <div class="callout warn">
+          <span class="callout-ic">⚠</span>
+          <span>Changing these affects <b>new</b> calculations only. Every saved record keeps the values that were in force when it ran, so old results stay reproducible.</span>
+        </div>
+        <div class="grid g3">
+          <div class="field">
+            <label for="set-capacity" data-help="capacity">DPM monthly capacity (MD)</label>
+            <input type="number" id="set-capacity" min="1" max="31" step="0.5">
+            <span class="field-help">Productive man-days one full-time DPM delivers per month. Default 18.</span>
+          </div>
+          <div class="field">
+            <label for="set-migration">Migration uplift (MD per site)</label>
+            <input type="number" id="set-migration" min="0" max="10" step="0.05">
+            <span class="field-help">Added per site on WAN projects when migration support is in scope. Default 0.5.</span>
+          </div>
+          <div class="field">
+            <label for="set-complexity">Default complexity %</label>
+            <input type="number" id="set-complexity" min="1" max="500" step="1">
+            <span class="field-help">Pre-filled on new allocation rows. Default 100.</span>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="set-save">Save settings</button>
+          <button class="btn btn-ghost btn-sm" id="set-reset">Restore defaults</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Where your data is saved</div></div>
+        <div id="settings-storage"></div>
+        <div class="btn-row mt-3" id="settings-storage-actions"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot c"></span>Backup and transfer</div>
+          <input type="file" id="backup-import-file" accept=".json" class="hidden">
+        </div>
+        <p class="card-note">
+          Download everything as a single JSON file you can keep, email, or load into
+          another browser or another machine. Importing adds to what is already here
+          rather than replacing it, and skips anything already present.
+        </p>
+        <div class="btn-row">
+          <button class="btn btn-outline btn-sm" id="backup-export">↓ Download full backup</button>
+          <button class="btn btn-outline btn-sm" id="backup-import-btn">↑ Restore from backup</button>
+        </div>
+      </div>
+
+      <div class="card mb-0">
+        <div class="card-head"><div class="card-title"><span class="dot a"></span>Maintenance</div></div>
+        <p class="card-note">Deleting records removes them from this browser and from your data folder. This cannot be undone.</p>
+        <div class="btn-row">
+          <button class="btn btn-outline btn-sm" id="maint-resync">↻ Re-sync to disk</button>
+          <button class="btn btn-danger btn-sm" id="maint-purge">✕ Delete all FTE records</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+
+<script src="lib/chart.umd.min.js"></script>
+<script src="lib/xlsx.full.min.js"></script>
+<script src="assets/dpm-directory.js"></script>
+<script src="assets/data.js"></script>
+<script src="assets/calc.js"></script>
+<script src="assets/db.js"></script>
+<script src="assets/ui.js"></script>
+<script src="assets/export.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

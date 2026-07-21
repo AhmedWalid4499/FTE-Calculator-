@@ -1,0 +1,10 @@
+# Normalise to LF in the repository, check out native on each platform.
+* text=auto
+
+# Windows-only scripts must keep CRLF or they can misbehave when run.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Vendored libraries: never reformat, and keep them out of diffs and language
+# statistics so the repo is reported as the code we actually wrote.
+lib/** binary linguist-vendored
