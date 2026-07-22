@@ -37,8 +37,9 @@ saved meanwhile is written out immediately. Nothing is lost in between.
 
 ### Everyone can, in every browser
 
-- **Export to Excel** — a workbook per estimate, with the allocation, a monthly
-  breakdown, the methodology and the exact rate card used.
+- **Export to Excel** — a formatted workbook per estimate: a summary with the
+  FTE up front, the full allocation as a sortable table with totals, and the
+  exact rate card the figures were priced from.
 - **Download full backup** — one JSON file with every record, project, DPM and
   setting. Restore it in another browser or on another machine.
 - **Import / export the DPM directory** as JSON or CSV.
@@ -133,14 +134,14 @@ assets/
   ui.js                    dialogs, toasts, tables, charts
   export.js                Excel workbooks
   app.js                   page controllers
-lib/                       Chart.js and SheetJS, stored locally
+lib/                       Chart.js and ExcelJS, stored locally
 Start FTE Calculator.cmd   local launcher
 server/serve.ps1           local host and JSON API
 build/Make-Portable.ps1    builds the single-file version
 data/                      your saved work — git-ignored, never published
 ```
 
-`lib/` holds local copies of Chart.js and SheetJS rather than loading them from
+`lib/` holds local copies of Chart.js and ExcelJS rather than loading them from
 a CDN, so the app works offline and cannot be broken by a blocked CDN or a
 library update.
 
