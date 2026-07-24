@@ -165,6 +165,12 @@
           <div class="field"><label for="w-end-date">End date</label><input type="date" id="w-end-date"></div>
           <div class="field"><span class="field-label">Derived duration</span><span class="project-code-pill" id="w-dur-derived">—</span></div>
         </div>
+
+        <div class="field mt-3">
+          <label for="w-schedule" data-help="deliverySchedule">Sites delivered per month <span class="tag tag-muted">optional — ramp-up / ramp-down</span></label>
+          <input type="text" id="w-schedule" placeholder="e.g. 10, 20, 30, 25, 15 — leave empty for an even spread" autocomplete="off">
+          <span class="field-help" id="w-schedule-status">Leave empty and effort is spread evenly across the duration. Enter one number per month — the sites delivered that month — to model a realistic ramp; they should add up to the total sites.</span>
+        </div>
       </div>
 
       <div class="card">
@@ -333,6 +339,12 @@
           <div class="field"><label for="l-start-date">Start date</label><input type="date" id="l-start-date"></div>
           <div class="field"><label for="l-end-date">End date</label><input type="date" id="l-end-date"></div>
           <div class="field"><span class="field-label">Derived duration</span><span class="project-code-pill" id="l-dur-derived">—</span></div>
+        </div>
+
+        <div class="field mt-3">
+          <label for="l-schedule" data-help="deliverySchedule">Sites delivered per month <span class="tag tag-muted">optional — ramp-up / ramp-down</span></label>
+          <input type="text" id="l-schedule" placeholder="e.g. 5, 10, 15, 12, 8 — leave empty for an even spread" autocomplete="off">
+          <span class="field-help" id="l-schedule-status">Leave empty and effort is spread evenly across the duration. Enter one number per month — the sites delivered that month — to model a realistic ramp; they should add up to the total sites.</span>
         </div>
       </div>
 

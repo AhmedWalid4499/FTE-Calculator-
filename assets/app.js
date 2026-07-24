@@ -264,6 +264,41 @@
     el('l-alloc-badge').innerHTML = allocBadge(allocated, total);
   }
 
+  /* Live feedback under the delivery-schedule field: how many months it spans,
+     whether the sites add up to the project total, and where the peak lands -
+     so mistakes are caught before Calculate rather than as a warning after. */
+  var SCHEDULE_DEFAULT_HELP = 'Leave empty and effort is spread evenly across the duration. Enter one number per month — the sites delivered that month — to model a realistic ramp; they should add up to the total sites.';
+
+  function renderScheduleStatus(side) {
+    var p = prefix(side);
+    var status = el(p + '-schedule-status');
+    if (!status) return;
+    var parsed = C.parseSchedule(val(p + '-schedule'));
+    if (!parsed.length) { status.innerHTML = SCHEDULE_DEFAULT_HELP; return; }
+    if (parsed.some(function (n) { return isNaN(n); })) {
+      status.innerHTML = '<span class="tag tag-err">Use numbers separated by commas, e.g. 10, 20, 30</span>';
+      return;
+    }
+    if (parsed.some(function (n) { return n < 0; })) {
+      status.innerHTML = '<span class="tag tag-err">Site counts cannot be negative</span>';
+      return;
+    }
+    var sum = parsed.reduce(function (t, n) { return t + n; }, 0);
+    var total = numVal(p + '-sites');
+    var peak = Math.max.apply(null, parsed);
+    var peakMonth = parsed.indexOf(peak) + 1;
+    var summary = parsed.length + ' month' + (parsed.length === 1 ? '' : 's') +
+      ', peak ' + fmt.int(peak) + ' sites in month ' + peakMonth;
+    if (!total) {
+      status.innerHTML = '<span class="tag tag-info">' + esc(summary) + '</span> — enter total sites to check the sum';
+    } else if (Math.abs(sum - total) < 1e-9) {
+      status.innerHTML = '<span class="tag tag-ok">✓ ' + fmt.int(sum) + ' of ' + fmt.int(total) + ' sites — ' + esc(summary) + '</span>';
+    } else {
+      status.innerHTML = '<span class="tag tag-warn">⚠ schedule adds to ' + fmt.int(sum) + ', but total sites is ' +
+        fmt.int(total) + '</span> — <span class="tag tag-info">' + esc(summary) + '</span>';
+    }
+  }
+
   function addWanRow() {
     var sites = numVal('w-add-sites');
     if (!(sites > 0)) { U.toast('Enter how many sites this row covers.', 'warn'); el('w-add-sites').focus(); return; }
@@ -796,6 +831,7 @@
       totalSites: numVal('w-sites'),
       mode: segValue('w-mode'),
       migration: segValue('w-migration'),
+      schedule: val('w-schedule'),
       allocation: S.wan.rows.map(function (r) { return Object.assign({}, r); })
     };
   }
@@ -808,6 +844,7 @@
       mode: segValue('l-mode'),
       stages: selectedStages(),
       fallbackOverride: numVal('l-fb-ovrd') || null,
+      schedule: val('l-schedule'),
       allocation: S.lan.rows.map(function (r) { return Object.assign({}, r); })
     };
   }
@@ -841,6 +878,7 @@
         pmRole: segValue('w-pm-role'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
         migrationMdPerSite: S.settings.migrationMdPerSite,
+        deliverySchedule: result.deliverySchedule,
         allocation: input.allocation
       },
       dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); }),
@@ -848,7 +886,10 @@
         rows: result.rows, baseMd: result.baseMd, migrationMd: result.migrationMd,
         totalMd: result.totalMd, mdPerMonth: result.mdPerMonth, fte: result.fte,
         headcount: result.headcount, utilisationPct: result.utilisationPct,
-        monthly: result.monthly, steps: result.steps, warnings: result.warnings
+        monthly: result.monthly, steps: result.steps, warnings: result.warnings,
+        usingSchedule: result.usingSchedule, peakMd: result.peakMd, peakFte: result.peakFte,
+        peakHeadcount: result.peakHeadcount, peakUtilisationPct: result.peakUtilisationPct,
+        peakMonth: result.peakMonth
       }
     };
 
@@ -885,6 +926,7 @@
         flan: segValue('l-flan'),
         pmRole: segValue('l-pm-role'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
+        deliverySchedule: result.deliverySchedule,
         allocation: input.allocation
       },
       dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); }),
@@ -893,7 +935,10 @@
         totalMd: result.totalMd, mdPerMonth: result.mdPerMonth, fte: result.fte,
         headcount: result.headcount, utilisationPct: result.utilisationPct,
         monthly: result.monthly, steps: result.steps, warnings: result.warnings,
-        usedTierRows: result.usedTierRows, fallbackTier: result.fallbackTier
+        usedTierRows: result.usedTierRows, fallbackTier: result.fallbackTier,
+        usingSchedule: result.usingSchedule, peakMd: result.peakMd, peakFte: result.peakFte,
+        peakHeadcount: result.peakHeadcount, peakUtilisationPct: result.peakUtilisationPct,
+        peakMonth: result.peakMonth
       }
     };
 
@@ -917,8 +962,8 @@
 
   /* ============================================================= results = */
 
-  function resultCell(label, value, helpKey, small) {
-    return '<div class="result-cell"><div class="result-cell-label">' + esc(label) +
+  function resultCell(label, value, helpKey, small, accent) {
+    return '<div class="result-cell' + (accent ? ' accent' : '') + '"><div class="result-cell-label">' + esc(label) +
       (helpKey ? ' ' + U.hint(helpKey) : '') + '</div>' +
       '<div class="result-cell-value' + (small ? ' sm' : '') + '">' + value + '</div></div>';
   }
@@ -947,22 +992,47 @@
     }).join('');
   }
 
+  /* The result KPI grid, shared by WAN and LAN. When a delivery schedule is in
+     play it grows three extra cells for the peak, and the two labels that
+     differ between the level and phased cases adapt. */
+  function resultGridHtml(r, i) {
+    var cells =
+      resultCell(r.usingSchedule ? 'FTE (average)' : 'FTE required', fmt.fte(r.fte), 'fte') +
+      resultCell('Headcount', r.headcount + ' people', 'headcount') +
+      resultCell('Utilisation', fmt.pct(r.utilisationPct), 'utilisation') +
+      resultCell('Total effort', fmt.md(r.totalMd) + ' MD', 'totalMd') +
+      resultCell(r.usingSchedule ? 'Average / month' : 'Per month', fmt.md(r.mdPerMonth) + ' MD', 'mdPerMonth') +
+      resultCell('Duration', fmt.months(i.months), null, true);
+    if (r.usingSchedule) {
+      cells +=
+        resultCell('Peak FTE', fmt.fte(r.peakFte), 'peakFte', false, true) +
+        resultCell('Peak headcount', r.peakHeadcount + ' people', 'peakHeadcount', false, true) +
+        resultCell('Busiest month', 'Month ' + r.peakMonth + ' · ' + fmt.md1(r.peakMd) + ' MD', null, true);
+    }
+    return '<div class="result-grid">' + cells + '</div>';
+  }
+
+  function scheduleNoteHtml(r, i) {
+    if (!r.usingSchedule) return '';
+    var sched = i.deliverySchedule || [];
+    return '<div class="callout"><span class="callout-ic">📈</span><span>' +
+      '<b>Delivery schedule:</b> ' + esc(sched.join(', ')) + ' sites per month. ' +
+      'The busiest month is <b>month ' + r.peakMonth + '</b> at ' + fmt.md1(r.peakMd) + ' MD, which needs <b>' +
+      fmt.fte(r.peakFte) + ' FTE (' + r.peakHeadcount + ' people)</b> — the level you actually staff to. ' +
+      'The average FTE above is the total effort levelled across the whole duration.</span></div>';
+  }
+
   function renderWanResult(record) {
     var r = record.results, i = record.inputs;
     el('w-results').classList.remove('hidden');
     el('w-result-box').innerHTML =
       '<div class="result-title">✓ WAN result — ' + esc(record.projectName) +
         ' <span class="tag tag-info">' + esc(record.projectCode) + '</span>' +
-        ' <span class="tag tag-muted">' + esc(i.mode) + ' mode</span></div>' +
+        ' <span class="tag tag-muted">' + esc(i.mode) + ' mode</span>' +
+        (r.usingSchedule ? ' <span class="tag tag-info">phased delivery</span>' : '') + '</div>' +
       warningsHtml(r.warnings) +
-      '<div class="result-grid">' +
-        resultCell('FTE required', fmt.fte(r.fte), 'fte') +
-        resultCell('Headcount', r.headcount + ' people', 'headcount') +
-        resultCell('Utilisation', fmt.pct(r.utilisationPct), 'utilisation') +
-        resultCell('Total effort', fmt.md(r.totalMd) + ' MD', 'totalMd') +
-        resultCell('Per month', fmt.md(r.mdPerMonth) + ' MD', 'mdPerMonth') +
-        resultCell('Duration', fmt.months(i.months), null, true) +
-      '</div>' +
+      scheduleNoteHtml(r, i) +
+      resultGridHtml(r, i) +
       '<div class="divider"><span>Effort by row</span></div>' + rowMathHtml(r.rows) +
       '<div class="divider"><span>How this number was reached</span></div>' + stepsHtml(r.steps);
 
@@ -981,16 +1051,11 @@
         ' <span class="tag tag-info">' + esc(record.projectCode) + '</span>' +
         ' <span class="tag tag-muted">' + esc(i.mode) + ' mode</span>' +
         (i.stages && i.stages.length ? ' <span class="tag tag-muted">' + esc(i.stages.join(', ')) + '</span>' : '') +
+        (r.usingSchedule ? ' <span class="tag tag-info">phased delivery</span>' : '') +
       '</div>' +
       warningsHtml(r.warnings) +
-      '<div class="result-grid">' +
-        resultCell('FTE required', fmt.fte(r.fte), 'fte') +
-        resultCell('Headcount', r.headcount + ' people', 'headcount') +
-        resultCell('Utilisation', fmt.pct(r.utilisationPct), 'utilisation') +
-        resultCell('Total effort', fmt.md(r.totalMd) + ' MD', 'totalMd') +
-        resultCell('Per month', fmt.md(r.mdPerMonth) + ' MD', 'mdPerMonth') +
-        resultCell('Duration', fmt.months(i.months), null, true) +
-      '</div>' +
+      scheduleNoteHtml(r, i) +
+      resultGridHtml(r, i) +
       '<div class="divider"><span>Effort by row</span></div>' + rowMathHtml(r.rows) +
       '<div class="divider"><span>How this number was reached</span></div>' + stepsHtml(r.steps);
 
@@ -1162,13 +1227,17 @@
         '<span class="tag tag-muted">' + esc(rec.id) + '</span></p>' +
         '<p class="mt-3"><b>Calculated</b> ' + esc(fmt.dateTime(rec.savedAt)) + ' · ' +
         esc(i.mode) + ' mode · capacity ' + i.capacityMdPerMonth + ' MD per month</p>' +
+        scheduleNoteHtml(r, i) +
         '<div class="result-grid mt-3">' +
-          resultCell('FTE', fmt.fte(r.fte)) +
+          resultCell(r.usingSchedule ? 'FTE (avg)' : 'FTE', fmt.fte(r.fte)) +
           resultCell('Headcount', String(r.headcount)) +
           resultCell('Utilisation', fmt.pct(r.utilisationPct)) +
           resultCell('Total MD', fmt.md(r.totalMd)) +
-          resultCell('Per month', fmt.md(r.mdPerMonth)) +
+          resultCell(r.usingSchedule ? 'Avg / month' : 'Per month', fmt.md(r.mdPerMonth)) +
           resultCell('Sites', fmt.int(i.totalSites)) +
+          (r.usingSchedule ? resultCell('Peak FTE', fmt.fte(r.peakFte), null, false, true) : '') +
+          (r.usingSchedule ? resultCell('Peak HC', String(r.peakHeadcount), null, false, true) : '') +
+          (r.usingSchedule ? resultCell('Busiest', 'Mo ' + r.peakMonth, null, true) : '') +
         '</div>' +
         '<div class="divider"><span>Effort by row</span></div>' + rowMathHtml(r.rows) +
         '<div class="divider"><span>Working</span></div>' + stepsHtml(r.steps) +
@@ -1243,6 +1312,7 @@
         months: numVal('w-months') || null, startDate: val('w-start-date'), endDate: val('w-end-date'),
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
+        schedule: val('w-schedule'),
         rows: S.wan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); })
       },
@@ -1252,6 +1322,7 @@
         sites: numVal('l-sites') || null, devices: numVal('l-devices'),
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
+        schedule: val('l-schedule'),
         rows: S.lan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); })
       }
@@ -1282,6 +1353,7 @@
     if (w.migration) setSeg('w-migration', w.migration);
     if (w.abacos) setSeg('w-abacos', w.abacos);
     if (w.mode) setSeg('w-mode', w.mode);
+    setVal('w-schedule', w.schedule || '');
 
     setVal('l-proj-name', l.projName || '');
     if (l.status) setSeg('l-status', l.status);
@@ -1294,7 +1366,9 @@
     if (l.flan) setSeg('l-flan', l.flan);
     if (l.mode) setSeg('l-mode', l.mode);
     setVal('l-fb-ovrd', l.fallbackOverride || '');
+    setVal('l-schedule', l.schedule || '');
 
+    renderScheduleStatus('wan'); renderScheduleStatus('lan');
     renderStageChips();
     if (l.stages) {
       qsa('#l-stages .stage-chip').forEach(function (n) {
@@ -1749,9 +1823,10 @@
     });
     el('w-save-project').addEventListener('click', saveCurrentAsProject);
     el('w-assign-dpms').addEventListener('click', function () { openDpmPicker('wan'); });
-    el('w-sites').addEventListener('input', renderWanAllocBadge);
+    el('w-sites').addEventListener('input', function () { renderWanAllocBadge(); renderScheduleStatus('wan'); });
     el('w-start-date').addEventListener('input', function () { recalcDuration('wan'); });
     el('w-end-date').addEventListener('input', function () { recalcDuration('wan'); });
+    el('w-schedule').addEventListener('input', function () { renderScheduleStatus('wan'); });
     el('w-add-sites').addEventListener('keydown', function (e) { if (e.key === 'Enter') addWanRow(); });
 
     /* LAN */
@@ -1770,9 +1845,10 @@
     });
     el('l-save-project').addEventListener('click', saveCurrentAsProject);
     el('l-assign-dpms').addEventListener('click', function () { openDpmPicker('lan'); });
-    el('l-sites').addEventListener('input', renderLanAllocBadge);
+    el('l-sites').addEventListener('input', function () { renderLanAllocBadge(); renderScheduleStatus('lan'); });
     el('l-start-date').addEventListener('input', function () { recalcDuration('lan'); });
     el('l-end-date').addEventListener('input', function () { recalcDuration('lan'); });
+    el('l-schedule').addEventListener('input', function () { renderScheduleStatus('lan'); });
     el('l-add-sites').addEventListener('keydown', function (e) { if (e.key === 'Enter') addLanRow(); });
 
     /* Records */

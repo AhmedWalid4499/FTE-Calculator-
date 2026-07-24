@@ -62,6 +62,7 @@ Write-Host ("    inlined {0,-28} {1,9:N0} chars" -f 'assets\app.css', $css.Lengt
 $scripts = @(
     'lib\chart.umd.min.js',
     'lib\exceljs.min.js',
+    'assets\dpm-directory.js',
     'assets\data.js',
     'assets\calc.js',
     'assets\db.js',

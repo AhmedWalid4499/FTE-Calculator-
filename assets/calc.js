@@ -23,14 +23,55 @@
     return Math.round((n + Number.EPSILON) * f) / f;
   }
 
+  /* Parse a delivery schedule typed by the user: how many sites are done in
+     each month. Accepts commas, spaces, semicolons or newlines as separators.
+     Returns an array of numbers (NaN entries are kept so the caller can reject
+     non-numeric input rather than silently dropping it). */
+  function parseSchedule(raw) {
+    var parts;
+    if (Array.isArray(raw)) {
+      parts = raw;
+    } else if (typeof raw === 'string') {
+      var t = raw.trim();
+      if (!t) return [];
+      parts = t.split(/[\s,;]+/).filter(function (x) { return x !== ''; });
+    } else {
+      return [];
+    }
+    return parts.map(function (x) { return num(x, NaN); });
+  }
+
   /* Effort spread across the calendar.
 
-     The duration may be fractional (6.4 months from a date range). Rounding it
-     to whole months makes the monthly figures stop summing to the total, and a
-     duration below 0.5 rounds to zero, producing an empty chart. So: allocate
-     one bucket per started month, and give the final partial month only its
-     fractional share. The buckets then always sum back to the total. */
-  function distributeMonthly(totalMd, months, capacity) {
+     With no schedule the effort is level: the duration may be fractional
+     (6.4 months from a date range), so we allocate one bucket per started month
+     and give the final partial month only its fractional share, which keeps the
+     buckets summing back to the total.
+
+     With a schedule the effort is phased in proportion to the sites delivered
+     each month - the realistic ramp-up/ramp-down the user asked for. Each entry
+     is one whole month; total effort is unchanged, only its shape. */
+  function distributeMonthly(totalMd, months, capacity, schedule) {
+    if (schedule && schedule.length) {
+      var sum = 0;
+      schedule.forEach(function (s) { if (s > 0) sum += s; });
+      if (sum > 0) {
+        return schedule.map(function (sites, i) {
+          var s = sites > 0 ? sites : 0;
+          var md = totalMd * (s / sum);
+          return {
+            month: i + 1,
+            sites: s,
+            span: 1,
+            md: round(md, 3),
+            fte: round(md / capacity, 3),
+            partial: false,
+            scheduled: true
+          };
+        });
+      }
+    }
+
     var buckets = Math.max(1, Math.ceil(months - 1e-9));
     var ratePerMonth = totalMd / months;
     var out = [];
@@ -42,7 +83,8 @@
         span: round(span, 3),
         md: round(ratePerMonth * span, 3),
         fte: round((ratePerMonth * span) / (span * capacity), 3),
-        partial: span < 0.999
+        partial: span < 0.999,
+        scheduled: false
       });
       remaining -= span;
     }
@@ -88,18 +130,59 @@
     return 'FTE-' + stamp + '-' + rand;
   }
 
+  /* Soft checks on a delivery schedule. These never block the estimate - the
+     schedule is a planning aid, not a correctness constraint - but the user
+     should be told when it does not line up with the project. Returns false
+     only when the schedule carries no sites at all, in which case the level
+     spread is used instead. */
+  function validateSchedule(schedule, totalSites, months, warnings) {
+    var sum = schedule.reduce(function (t, n) { return t + (n > 0 ? n : 0); }, 0);
+    if (sum <= 0) return false;
+    if (Math.abs(sum - totalSites) > 1e-9) {
+      warnings.push('The delivery schedule adds up to ' + round(sum, 2) + ' sites but the project has ' +
+        round(totalSites, 2) + '. Effort was phased using the schedule’s proportions.');
+    }
+    var expected = Math.max(1, Math.round(months));
+    if (schedule.length !== expected) {
+      warnings.push('The delivery schedule covers ' + schedule.length + ' month(s), while the duration is ' +
+        round(months, 2) + ' month(s). The schedule was used for the monthly phasing.');
+    }
+    return true;
+  }
+
   /* ------------------------------------------------- shared final maths --- */
 
   /* Everything downstream of "we know the total man-days" is identical for
-     WAN and LAN, so it lives in one place and is explained in one place. */
-  function finalise(totalMd, months, capacity, steps) {
+     WAN and LAN, so it lives in one place and is explained in one place.
+
+     The headline FTE stays the *average* - total effort levelled across the
+     duration - and never changes just because a delivery schedule was entered.
+     A schedule adds a second, separate figure: the PEAK FTE, the team size the
+     busiest month actually needs. With no schedule the peak equals the average,
+     so the extra figure only appears when it tells you something new. */
+  function finalise(totalMd, months, capacity, steps, opts) {
+    opts = opts || {};
+    var monthly = distributeMonthly(totalMd, months, capacity, opts.schedule);
+    var usingSchedule = monthly.length > 0 && monthly[0].scheduled === true;
+
     var mdPerMonth = totalMd / months;
     var fte = mdPerMonth / capacity;
     var headcount = Math.ceil(fte - 1e-9);
     var utilisation = headcount > 0 ? (fte / headcount) * 100 : 0;
 
+    /* Sustained load of the busiest month (md / span normalises the final
+       partial month of the level case, so the flat peak equals the average). */
+    var peakMd = 0, peakMonth = 1;
+    monthly.forEach(function (m) {
+      var sustained = m.md / (m.span || 1);
+      if (sustained > peakMd + 1e-9) { peakMd = sustained; peakMonth = m.month; }
+    });
+    var peakFte = peakMd / capacity;
+    var peakHeadcount = Math.ceil(peakFte - 1e-9);
+    var peakUtil = peakHeadcount > 0 ? (peakFte / peakHeadcount) * 100 : 0;
+
     steps.push({
-      label: 'Spread across the duration',
+      label: usingSchedule ? 'Average across the duration' : 'Spread across the duration',
       formula: round(totalMd, 3) + ' MD / ' + round(months, 2) + ' months',
       value: round(mdPerMonth, 3) + ' MD per month'
     });
@@ -119,13 +202,32 @@
       value: round(utilisation, 1) + '%'
     });
 
+    if (usingSchedule) {
+      steps.push({
+        label: 'Busiest month (from the delivery schedule)',
+        formula: 'peak monthly effort, in month ' + peakMonth,
+        value: round(peakMd, 3) + ' MD'
+      });
+      steps.push({
+        label: 'Peak FTE to staff the busiest month',
+        formula: round(peakMd, 3) + ' MD / ' + capacity + ' MD capacity per DPM per month',
+        value: round(peakFte, 3) + ' FTE (' + peakHeadcount + ' headcount)'
+      });
+    }
+
     return {
       totalMd: round(totalMd, 3),
       mdPerMonth: round(mdPerMonth, 3),
       fte: round(fte, 3),
       headcount: headcount,
       utilisationPct: round(utilisation, 1),
-      monthly: distributeMonthly(totalMd, months, capacity)
+      monthly: monthly,
+      usingSchedule: usingSchedule,
+      peakMd: round(peakMd, 3),
+      peakFte: round(peakFte, 3),
+      peakHeadcount: peakHeadcount,
+      peakUtilisationPct: round(peakUtil, 1),
+      peakMonth: peakMonth
     };
   }
 
@@ -148,12 +250,19 @@
     var mode       = input.mode || 'Standard';
     var migration  = input.migration === 'Yes';
     var allocation = input.allocation || [];
+    var schedule   = parseSchedule(input.schedule);
+    var useSchedule = schedule.length > 0;
 
     if (!(months > 0))     errors.push({ field: 'w-months', message: 'Enter a project duration greater than zero.' });
     if (!(totalSites > 0)) errors.push({ field: 'w-sites',  message: 'Total sites must be greater than zero.' });
     if (!(capacity > 0))   errors.push({ field: 'set-capacity', message: 'Monthly capacity must be greater than zero.' });
     if (!allocation.length) {
       errors.push({ field: 'w-alloc', message: 'Add at least one product allocation row.' });
+    }
+    if (useSchedule && schedule.some(function (n) { return isNaN(n); })) {
+      errors.push({ field: 'w-schedule', message: 'The delivery schedule must be numbers separated by commas, for example 10, 20, 30.' });
+    } else if (useSchedule && schedule.some(function (n) { return n < 0; })) {
+      errors.push({ field: 'w-schedule', message: 'The delivery schedule cannot contain negative numbers.' });
     }
 
     var allocated = allocation.reduce(function (t, r) { return t + num(r.sites); }, 0);
@@ -238,10 +347,13 @@
       value: round(totalMd, 3) + ' MD'
     });
 
-    var out = finalise(totalMd, months, capacity, steps);
+    if (useSchedule) { useSchedule = validateSchedule(schedule, totalSites, months, warnings); }
+
+    var out = finalise(totalMd, months, capacity, steps, { schedule: useSchedule ? schedule : null });
     out.rows = withShares(rows, totalMd);
     out.baseMd = round(baseMd, 3);
     out.migrationMd = round(migrationMd, 3);
+    out.deliverySchedule = useSchedule ? schedule : null;
     out.steps = steps;
     out.ok = true;
     out.errors = [];
@@ -263,12 +375,19 @@
     var mode       = input.mode || 'Standard';
     var stages     = input.stages || [];
     var allocation = input.allocation || [];
+    var schedule   = parseSchedule(input.schedule);
+    var useSchedule = schedule.length > 0;
 
     if (!(months > 0))     errors.push({ field: 'l-months', message: 'Enter a project duration greater than zero.' });
     if (!(totalSites > 0)) errors.push({ field: 'l-sites',  message: 'Total sites must be greater than zero.' });
     if (!(capacity > 0))   errors.push({ field: 'set-capacity', message: 'Monthly capacity must be greater than zero.' });
     if (mode === 'By Stage' && !stages.length) {
       errors.push({ field: 'l-stages', message: 'By Stage mode needs at least one delivery stage selected.' });
+    }
+    if (useSchedule && schedule.some(function (n) { return isNaN(n); })) {
+      errors.push({ field: 'l-schedule', message: 'The delivery schedule must be numbers separated by commas, for example 10, 20, 30.' });
+    } else if (useSchedule && schedule.some(function (n) { return n < 0; })) {
+      errors.push({ field: 'l-schedule', message: 'The delivery schedule cannot contain negative numbers.' });
     }
 
     var usingTierRows = allocation.length > 0 &&
@@ -390,10 +509,13 @@
       value: round(totalMd, 3) + ' MD'
     });
 
-    var out = finalise(totalMd, months, capacity, steps);
+    if (useSchedule) { useSchedule = validateSchedule(schedule, totalSites, months, warnings); }
+
+    var out = finalise(totalMd, months, capacity, steps, { schedule: useSchedule ? schedule : null });
     out.rows = withShares(rows, totalMd);
     out.baseMd = round(totalMd, 3);
     out.migrationMd = 0;
+    out.deliverySchedule = useSchedule ? schedule : null;
     out.steps = steps;
     out.ok = true;
     out.errors = [];
@@ -408,6 +530,7 @@
     num: num,
     round: round,
     monthsBetween: monthsBetween,
+    parseSchedule: parseSchedule,
     distributeMonthly: distributeMonthly,
     makeProjectCode: makeProjectCode,
     makeRecordId: makeRecordId,

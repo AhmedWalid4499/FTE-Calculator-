@@ -93,6 +93,16 @@ utilisation  = FTE / headcount
 The **Rates & Method** page lists every published rate, a worked example and a
 glossary. Every result also shows its own arithmetic, step by step.
 
+### Delivery schedule (ramp-up / ramp-down)
+
+By default the effort is spread evenly across every month, which assumes the
+same number of sites is delivered each month — rarely true in practice. Fill in
+**Sites delivered per month** (one number per month, e.g. `10, 20, 30, 25, 15`)
+and the tool phases the effort to match and reports the **peak FTE**: the team
+size the busiest month actually needs, which is what you staff to. The total
+effort and the average FTE are unchanged — the schedule only reveals the peak.
+Leave it empty for the even spread. Available on both WAN and LAN.
+
 ### Fields that do not affect the result
 
 `Project Type`, `ABACOS`, `FLAN`, `DPM acting as PM` and `Project Status` are

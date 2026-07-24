@@ -236,6 +236,19 @@
 
   function headlineCells(record) {
     var r = record.results, i = record.inputs;
+    if (r.usingSchedule) {
+      /* With a phased delivery the peak is the number you staff to, so it leads
+         and is highlighted; the average sits beside it for budgeting. */
+      return [
+        { label: 'Peak FTE', value: r.peakFte, format: FMT.fte, highlight: true,
+          note: 'busiest month (month ' + r.peakMonth + ')' },
+        { label: 'Peak headcount', value: r.peakHeadcount, format: FMT.int, note: 'people at the peak' },
+        { label: 'FTE (average)', value: r.fte, format: FMT.fte, note: 'levelled over ' + i.months + ' months' },
+        { label: 'Headcount (avg)', value: r.headcount, format: FMT.int, note: 'average team' },
+        { label: 'Total effort', value: r.totalMd, format: FMT.md, note: 'man-days' },
+        { label: 'Total sites', value: i.totalSites, format: FMT.int, note: 'in scope' }
+      ];
+    }
     return [
       { label: 'FTE required', value: r.fte, format: FMT.fte, highlight: true,
         note: 'at ' + i.capacityMdPerMonth + ' MD per DPM per month' },
@@ -359,12 +372,16 @@
       inputFacts.splice(6, 0, ['Priced from', r.usedTierRows ? 'Tier rows' : ('Fallback tier ' + (r.fallbackTier || '')),
         r.usedTierRows ? 'Each tier row priced separately' : 'All sites priced at one tier']);
     }
+    inputFacts.push(['Delivery schedule',
+      r.usingSchedule ? (i.deliverySchedule || []).join(', ') : 'Even spread',
+      r.usingSchedule ? 'Sites delivered each month; effort is phased to match'
+                      : 'Effort spread evenly across the duration']);
     row = addFactTable(ws, row, 'Inputs that affect the result', inputFacts);
 
     var resultFacts = [
       ['Total effort (MD)', r.totalMd, 'Sum of every allocation row' + (isWan && r.migrationMd ? ' plus the migration uplift' : '')],
-      ['Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
-      ['FTE required', r.fte, r.mdPerMonth + ' MD per month / ' + i.capacityMdPerMonth + ' MD capacity'],
+      [r.usingSchedule ? 'Average effort per month (MD)' : 'Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
+      [r.usingSchedule ? 'FTE (average)' : 'FTE required', r.fte, r.mdPerMonth + ' MD per month / ' + i.capacityMdPerMonth + ' MD capacity'],
       ['Headcount', r.headcount, 'FTE rounded up to whole people'],
       ['Utilisation (%)', r.utilisationPct, r.fte + ' FTE / ' + r.headcount + ' headcount']
     ];
@@ -372,6 +389,12 @@
       resultFacts.unshift(['Migration uplift (MD)', r.migrationMd, i.migration === 'Yes'
         ? (i.migrationMdPerSite + ' MD x ' + i.totalSites + ' sites') : 'Not in scope']);
       resultFacts.unshift(['Base effort (MD)', r.baseMd, 'Allocation rows only']);
+    }
+    if (r.usingSchedule) {
+      resultFacts.push(['Busiest month', 'Month ' + r.peakMonth, 'Highest effort in the delivery schedule']);
+      resultFacts.push(['Peak effort per month (MD)', r.peakMd, 'The busiest month of the schedule']);
+      resultFacts.push(['Peak FTE', r.peakFte, r.peakMd + ' MD / ' + i.capacityMdPerMonth + ' MD capacity — staff to this']);
+      resultFacts.push(['Peak headcount', r.peakHeadcount, 'Peak FTE rounded up — the largest team the schedule needs']);
     }
     row = addFactTable(ws, row, 'Result', resultFacts, { theme: 'TableStyleLight11' });
 
@@ -394,7 +417,14 @@
       'Row effort = base rate x complexity x sites.   ' + record.projectCode +
       '   ·   ' + record.type + '   ·   ' + i.mode + ' mode');
 
-    var arow = kpiBand(as, 5, [
+    var arow = kpiBand(as, 5, r.usingSchedule ? [
+      { label: 'Peak FTE', value: r.peakFte, format: FMT.fte, highlight: true, note: 'busiest month' },
+      { label: 'FTE (average)', value: r.fte, format: FMT.fte, note: 'levelled' },
+      { label: 'Total effort', value: r.totalMd, format: FMT.md, note: 'man-days' },
+      { label: 'Allocation rows', value: r.rows.length, format: FMT.int, note: 'groups of sites' },
+      { label: 'Total sites', value: i.totalSites, format: FMT.int, note: 'in scope' },
+      { label: 'Duration', value: i.months, format: FMT.md1, note: 'months' }
+    ] : [
       { label: 'FTE required', value: r.fte, format: FMT.fte, highlight: true, note: 'for this project' },
       { label: 'Headcount', value: r.headcount, format: FMT.int, note: 'people' },
       { label: 'Total effort', value: r.totalMd, format: FMT.md, note: 'man-days' },

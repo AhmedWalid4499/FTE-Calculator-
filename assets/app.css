@@ -424,6 +424,10 @@ td.actions { width: 1%; white-space: nowrap; }
 .result-cell-label { font-size: .65rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--text-4); margin-bottom: 4px; display: flex; align-items: center; gap: 5px; }
 .result-cell-value { font-family: var(--mono); font-size: 1.08rem; color: var(--text); font-weight: 500; }
 .result-cell-value.sm { font-size: .82rem; font-family: var(--font); font-weight: 600; }
+/* Peak figures (delivery schedule): the staffing-critical numbers, so they get
+   the accent tint to stand apart from the average figures beside them. */
+.result-cell.accent { border-color: var(--accent); background: var(--info-bg); }
+.result-cell.accent .result-cell-value { color: var(--accent); }
 
 /* the "show your working" panel */
 .steps { list-style: none; counter-reset: step; }
