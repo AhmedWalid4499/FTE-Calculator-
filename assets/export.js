@@ -232,6 +232,69 @@
     global.UI.toast('The workbook could not be created: ' + (err && err.message ? err.message : err), 'err');
   }
 
+  /* ------------------------------------------------------- chart images -- */
+
+  /* ExcelJS cannot author native Excel charts, so the graphs are rendered with
+     the Chart.js already loaded for the app and embedded as PNG images. With
+     animation off, Chart.js draws synchronously on construction, so the canvas
+     can be read back immediately. Colours are fixed to the light palette
+     because the sheet background is always white. */
+  var CH = {
+    ink: '#334155', grid: '#e2e8f0', bar: '#3b82f6', peak: '#ef4444',
+    line: '#16a34a', avg: '#94a3b8'
+  };
+
+  /* Paints a white backdrop so the PNG is not transparent when printed. */
+  var whiteBg = {
+    id: 'whiteBg',
+    beforeDraw: function (c) {
+      var ctx = c.ctx;
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.restore();
+    }
+  };
+
+  function chartToPng(config, w, h) {
+    if (typeof Chart === 'undefined' || typeof document === 'undefined') return null;
+    var canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    var chart = null;
+    try {
+      chart = new Chart(canvas.getContext('2d'), config);
+      var url = canvas.toDataURL('image/png');
+      return url.substring(url.indexOf(',') + 1);
+    } catch (e) {
+      console.error('chart render failed', e);
+      return null;
+    } finally {
+      if (chart) chart.destroy();
+    }
+  }
+
+  /* Place a rendered chart, sized in pixels, anchored to a cell. Returns the
+     row a following block should start on, leaving room for the image. */
+  function placeChart(wb, ws, base64, col, row, width, height) {
+    if (!base64) return row + 2;
+    var id = wb.addImage({ base64: base64, extension: 'png' });
+    ws.addImage(id, { tl: { col: col, row: row }, ext: { width: width, height: height } });
+    return row + Math.ceil(height / 20) + 2;   // default row is ~20px tall
+  }
+
+  /* A lightweight in-cell bar, so the distribution reads at a glance even in a
+     printed table with no image. */
+  function barText(value, max, width) {
+    width = width || 12;
+    if (!(max > 0)) return '';
+    var filled = Math.max(0, Math.min(width, Math.round((value / max) * width)));
+    var out = '';
+    for (var i = 0; i < filled; i++) out += '█';
+    for (var j = 0; j < width - filled; j++) out += '░';
+    return out;
+  }
+
   /* ------------------------------------------------------ shared sheets -- */
 
   function headlineCells(record) {
@@ -330,6 +393,163 @@
       rows: record.dpms.map(function (d) { return [d.name, d.email, d.role || 'DPM']; })
     });
   }
+
+  /* ------------------------------------------------ monthly distribution -- */
+
+  /* The month-by-month view the effort is spread over. Always available (even
+     the even-spread case produces one bucket per month), and genuinely useful
+     once a delivery schedule turns it into a ramp. A numeric table plus two
+     embedded graphs: effort with a cumulative-delivery curve, and the FTE each
+     month against the average - which is exactly what a phased plan reveals. */
+  function monthlyDistributionSheet(wb, record) {
+    var r = record.results, i = record.inputs;
+    var monthly = r.monthly || [];
+    if (!monthly.length) return;
+
+    var scheduled = !!r.usingSchedule;
+    var total = r.totalMd || 0;
+    var maxMd = monthly.reduce(function (m, x) { return Math.max(m, x.md); }, 0);
+    var peakMonth = r.peakMonth || 0;
+    var avgFte = r.fte || 0;
+
+    var lastCol = scheduled ? 8 : 7;
+    var widths = scheduled ? [10, 12, 16, 12, 16, 12, 16, 14] : [10, 16, 12, 16, 12, 16, 14];
+    var ws = newSheet(wb, 'Monthly distribution', widths);
+
+    titleBlock(ws, lastCol, 'MONTHLY DISTRIBUTION', record.projectName,
+      (scheduled
+        ? 'Effort phased to the delivery schedule — the busiest month drives the staffing.'
+        : 'Effort spread evenly across the duration — enter a delivery schedule to model a ramp.') +
+      '   ·   ' + record.projectCode + '   ·   ' + record.type);
+
+    var row = kpiBand(ws, 5, scheduled ? [
+      { label: 'Peak FTE', value: r.peakFte, format: FMT.fte, highlight: true, note: 'busiest month' },
+      { label: 'Busiest month', value: peakMonth, format: FMT.int, note: 'month number' },
+      { label: 'Peak effort', value: r.peakMd, format: FMT.md, note: 'MD that month' },
+      { label: 'FTE (average)', value: avgFte, format: FMT.fte, note: 'levelled' },
+      { label: 'Total effort', value: total, format: FMT.md, note: 'man-days' },
+      { label: 'Months', value: monthly.length, format: FMT.int, note: 'in the plan' }
+    ] : [
+      { label: 'FTE required', value: avgFte, format: FMT.fte, highlight: true, note: 'even spread' },
+      { label: 'Effort per month', value: r.mdPerMonth, format: FMT.md, note: 'man-days' },
+      { label: 'Total effort', value: total, format: FMT.md, note: 'man-days' },
+      { label: 'Duration', value: i.months, format: FMT.md1, note: 'months' },
+      { label: 'Total sites', value: i.totalSites, format: FMT.int, note: 'in scope' },
+      { label: 'Months', value: monthly.length, format: FMT.int, note: 'buckets' }
+    ]) + 1;
+
+    /* ---- the numbers ---- */
+    var cum = 0;
+    var tableRows = monthly.map(function (m) {
+      cum += m.md;
+      var share = total > 0 ? round2(m.md / total * 100) : 0;
+      var cumPct = total > 0 ? round2(cum / total * 100) : 0;
+      var base = ['Month ' + m.month];
+      if (scheduled) base.push(m.sites);
+      base.push(m.md, m.fte, barText(m.md, maxMd), share, round2(cum), cumPct);
+      return base;
+    });
+
+    var columns = [{ name: 'Month', width: 10 }];
+    if (scheduled) columns.push({ name: 'Sites', numFmt: FMT.int, align: 'right', total: 'sum' });
+    columns.push(
+      { name: 'Effort (MD)', numFmt: FMT.md, align: 'right', total: 'sum' },
+      { name: 'FTE', numFmt: FMT.fte, align: 'right' },
+      { name: 'Load', width: 16, align: 'left' },
+      { name: 'Share', numFmt: FMT.pct, align: 'right' },
+      { name: 'Cumulative MD', numFmt: FMT.md, align: 'right' },
+      { name: 'Cumulative', numFmt: FMT.pct, align: 'right' }
+    );
+    /* one column carries the totals label */
+    columns[0].total = 'label';
+    columns[0].totalLabel = 'TOTAL';
+
+    row = addTable(ws, {
+      row: row, hint: 'Monthly', theme: 'TableStyleMedium2', totals: true,
+      columns: columns, rows: tableRows
+    });
+    if (scheduled && Math.abs(monthly.reduce(function (t, m) { return t + (m.sites || 0); }, 0) - i.totalSites) > 1e-9) {
+      row = note(ws, row, 'The schedule does not add up to the ' + i.totalSites +
+        ' total sites; effort was phased using its proportions.');
+    }
+    row = note(ws, row, 'A partial final month (from a fractional duration) carries only its share of a month.');
+    row += 1;
+
+    /* ---- the graphs ---- */
+    row = sectionLabel(ws, row, 'Visualisation');
+
+    var labels = monthly.map(function (m) { return 'M' + m.month; });
+    var mds = monthly.map(function (m) { return m.md; });
+    var ftes = monthly.map(function (m) { return m.fte; });
+    var cumPctSeries = [];
+    var running = 0;
+    monthly.forEach(function (m) { running += m.md; cumPctSeries.push(total > 0 ? round2(running / total * 100) : 0); });
+    var barColours = monthly.map(function (m) {
+      return (scheduled && m.month === peakMonth) ? CH.peak : CH.bar;
+    });
+
+    var combo = chartToPng({
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { type: 'bar', label: 'Man-days', data: mds, backgroundColor: barColours,
+            borderRadius: 3, yAxisID: 'y', order: 2 },
+          { type: 'line', label: 'Cumulative delivery %', data: cumPctSeries,
+            borderColor: CH.line, backgroundColor: CH.line, tension: 0.25, pointRadius: 3,
+            yAxisID: 'y1', order: 1 }
+        ]
+      },
+      options: {
+        responsive: false, animation: false, devicePixelRatio: 1,
+        layout: { padding: 8 },
+        plugins: {
+          legend: { labels: { color: CH.ink, font: { size: 13 } } },
+          title: { display: true, text: 'Effort per month and cumulative delivery', color: CH.ink, font: { size: 16, weight: 'bold' } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
+          y: { beginAtZero: true, title: { display: true, text: 'Man-days', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } },
+          y1: { position: 'right', beginAtZero: true, suggestedMax: 100, title: { display: true, text: 'Cumulative %', color: CH.ink }, ticks: { color: CH.ink }, grid: { drawOnChartArea: false } }
+        }
+      },
+      plugins: [whiteBg]
+    }, 1400, 540);
+
+    var fteChart = chartToPng({
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { type: 'bar', label: 'FTE that month', data: ftes, backgroundColor: barColours, borderRadius: 3, order: 2 },
+          { type: 'line', label: 'Average FTE (' + round2(avgFte) + ')', data: labels.map(function () { return avgFte; }),
+            borderColor: CH.avg, borderDash: [6, 4], borderWidth: 2, pointRadius: 0, order: 1 }
+        ]
+      },
+      options: {
+        responsive: false, animation: false, devicePixelRatio: 1,
+        layout: { padding: 8 },
+        plugins: {
+          legend: { labels: { color: CH.ink, font: { size: 13 } } },
+          title: { display: true, text: scheduled ? 'FTE needed each month vs. the average' : 'FTE per month (even spread)', color: CH.ink, font: { size: 16, weight: 'bold' } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
+          y: { beginAtZero: true, title: { display: true, text: 'FTE', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } }
+        }
+      },
+      plugins: [whiteBg]
+    }, 1400, 500);
+
+    row = placeChart(wb, ws, combo, 0, row, 770, 297);
+    row = placeChart(wb, ws, fteChart, 0, row, 770, 275);
+
+    if (scheduled) {
+      note(ws, row, 'The gap between the tallest bar and the dashed average line is the staffing the even-spread view hides.');
+    }
+  }
+
+  function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
   /* ---------------------------------------------------------- WAN / LAN -- */
 
@@ -507,6 +727,7 @@
       r.warnings.forEach(function (w) { arow = note(as, arow, 'Note: ' + w); });
     }
 
+    monthlyDistributionSheet(wb, record);
     rateCardSheet(wb, record);
     dpmSheet(wb, record);
     return wb;

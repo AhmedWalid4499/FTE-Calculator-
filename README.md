@@ -38,8 +38,10 @@ saved meanwhile is written out immediately. Nothing is lost in between.
 ### Everyone can, in every browser
 
 - **Export to Excel** — a formatted workbook per estimate: a summary with the
-  FTE up front, the full allocation as a sortable table with totals, and the
-  exact rate card the figures were priced from.
+  FTE up front, the full allocation as a sortable table with totals, a
+  month-by-month distribution tab with two graphs (effort with a cumulative
+  curve, and FTE per month against the average), and the exact rate card the
+  figures were priced from.
 - **Download full backup** — one JSON file with every record, project, DPM and
   setting. Restore it in another browser or on another machine.
 - **Import / export the DPM directory** as JSON or CSV.
