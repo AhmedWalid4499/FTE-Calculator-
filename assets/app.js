@@ -264,40 +264,6 @@
     el('l-alloc-badge').innerHTML = allocBadge(allocated, total);
   }
 
-  /* Live feedback under the delivery-schedule field: how many months it spans,
-     whether the sites add up to the project total, and where the peak lands -
-     so mistakes are caught before Calculate rather than as a warning after. */
-  var SCHEDULE_DEFAULT_HELP = 'Leave empty and effort is spread evenly across the duration. Enter one number per month — the sites delivered that month — to model a realistic ramp; they should add up to the total sites.';
-
-  function renderScheduleStatus(side) {
-    var p = prefix(side);
-    var status = el(p + '-schedule-status');
-    if (!status) return;
-    var parsed = C.parseSchedule(val(p + '-schedule'));
-    if (!parsed.length) { status.innerHTML = SCHEDULE_DEFAULT_HELP; return; }
-    if (parsed.some(function (n) { return isNaN(n); })) {
-      status.innerHTML = '<span class="tag tag-err">Use numbers separated by commas, e.g. 10, 20, 30</span>';
-      return;
-    }
-    if (parsed.some(function (n) { return n < 0; })) {
-      status.innerHTML = '<span class="tag tag-err">Site counts cannot be negative</span>';
-      return;
-    }
-    var sum = parsed.reduce(function (t, n) { return t + n; }, 0);
-    var total = numVal(p + '-sites');
-    var peak = Math.max.apply(null, parsed);
-    var peakMonth = parsed.indexOf(peak) + 1;
-    var summary = parsed.length + ' month' + (parsed.length === 1 ? '' : 's') +
-      ', peak ' + fmt.int(peak) + ' sites in month ' + peakMonth;
-    if (!total) {
-      status.innerHTML = '<span class="tag tag-info">' + esc(summary) + '</span> — enter total sites to check the sum';
-    } else if (Math.abs(sum - total) < 1e-9) {
-      status.innerHTML = '<span class="tag tag-ok">✓ ' + fmt.int(sum) + ' of ' + fmt.int(total) + ' sites — ' + esc(summary) + '</span>';
-    } else {
-      status.innerHTML = '<span class="tag tag-warn">⚠ schedule adds to ' + fmt.int(sum) + ', but total sites is ' +
-        fmt.int(total) + '</span> — <span class="tag tag-info">' + esc(summary) + '</span>';
-    }
-  }
 
   function addWanRow() {
     var sites = numVal('w-add-sites');
@@ -831,7 +797,7 @@
       totalSites: numVal('w-sites'),
       mode: segValue('w-mode'),
       migration: segValue('w-migration'),
-      schedule: val('w-schedule'),
+      distribution: segValue('w-dist'),
       allocation: S.wan.rows.map(function (r) { return Object.assign({}, r); })
     };
   }
@@ -844,7 +810,7 @@
       mode: segValue('l-mode'),
       stages: selectedStages(),
       fallbackOverride: numVal('l-fb-ovrd') || null,
-      schedule: val('l-schedule'),
+      distribution: segValue('l-dist'),
       allocation: S.lan.rows.map(function (r) { return Object.assign({}, r); })
     };
   }
@@ -878,7 +844,7 @@
         pmRole: segValue('w-pm-role'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
         migrationMdPerSite: S.settings.migrationMdPerSite,
-        deliverySchedule: result.deliverySchedule,
+        distribution: result.distribution,
         allocation: input.allocation
       },
       dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); }),
@@ -887,7 +853,8 @@
         totalMd: result.totalMd, mdPerMonth: result.mdPerMonth, fte: result.fte,
         headcount: result.headcount, utilisationPct: result.utilisationPct,
         monthly: result.monthly, steps: result.steps, warnings: result.warnings,
-        usingSchedule: result.usingSchedule, peakMd: result.peakMd, peakFte: result.peakFte,
+        distribution: result.distribution, usingBell: result.usingBell,
+        peakMd: result.peakMd, peakFte: result.peakFte,
         peakHeadcount: result.peakHeadcount, peakUtilisationPct: result.peakUtilisationPct,
         peakMonth: result.peakMonth
       }
@@ -926,7 +893,7 @@
         flan: segValue('l-flan'),
         pmRole: segValue('l-pm-role'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
-        deliverySchedule: result.deliverySchedule,
+        distribution: result.distribution,
         allocation: input.allocation
       },
       dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); }),
@@ -936,7 +903,8 @@
         headcount: result.headcount, utilisationPct: result.utilisationPct,
         monthly: result.monthly, steps: result.steps, warnings: result.warnings,
         usedTierRows: result.usedTierRows, fallbackTier: result.fallbackTier,
-        usingSchedule: result.usingSchedule, peakMd: result.peakMd, peakFte: result.peakFte,
+        distribution: result.distribution, usingBell: result.usingBell,
+        peakMd: result.peakMd, peakFte: result.peakFte,
         peakHeadcount: result.peakHeadcount, peakUtilisationPct: result.peakUtilisationPct,
         peakMonth: result.peakMonth
       }
@@ -992,18 +960,23 @@
     }).join('');
   }
 
-  /* The result KPI grid, shared by WAN and LAN. When a delivery schedule is in
-     play it grows three extra cells for the peak, and the two labels that
-     differ between the level and phased cases adapt. */
+  /* Records saved before this change carry usingSchedule instead of usingBell;
+     treat either as "distribution is shaped, show the peak". */
+  function isShaped(r) { return !!(r.usingBell || r.usingSchedule); }
+
+  /* The result KPI grid, shared by WAN and LAN. With a bell-curve distribution
+     it grows three extra cells for the peak, and the two labels that differ
+     between the flat and shaped cases adapt. */
   function resultGridHtml(r, i) {
+    var shaped = isShaped(r);
     var cells =
-      resultCell(r.usingSchedule ? 'FTE (average)' : 'FTE required', fmt.fte(r.fte), 'fte') +
+      resultCell(shaped ? 'FTE (average)' : 'FTE required', fmt.fte(r.fte), 'fte') +
       resultCell('Headcount', r.headcount + ' people', 'headcount') +
       resultCell('Utilisation', fmt.pct(r.utilisationPct), 'utilisation') +
       resultCell('Total effort', fmt.md(r.totalMd) + ' MD', 'totalMd') +
-      resultCell(r.usingSchedule ? 'Average / month' : 'Per month', fmt.md(r.mdPerMonth) + ' MD', 'mdPerMonth') +
+      resultCell(shaped ? 'Average / month' : 'Per month', fmt.md(r.mdPerMonth) + ' MD', 'mdPerMonth') +
       resultCell('Duration', fmt.months(i.months), null, true);
-    if (r.usingSchedule) {
+    if (shaped) {
       cells +=
         resultCell('Peak FTE', fmt.fte(r.peakFte), 'peakFte', false, true) +
         resultCell('Peak headcount', r.peakHeadcount + ' people', 'peakHeadcount', false, true) +
@@ -1012,14 +985,13 @@
     return '<div class="result-grid">' + cells + '</div>';
   }
 
-  function scheduleNoteHtml(r, i) {
-    if (!r.usingSchedule) return '';
-    var sched = i.deliverySchedule || [];
+  function distributionNoteHtml(r) {
+    if (!isShaped(r)) return '';
     return '<div class="callout"><span class="callout-ic">📈</span><span>' +
-      '<b>Delivery schedule:</b> ' + esc(sched.join(', ')) + ' sites per month. ' +
-      'The busiest month is <b>month ' + r.peakMonth + '</b> at ' + fmt.md1(r.peakMd) + ' MD, which needs <b>' +
+      '<b>Bell-curve distribution.</b> The man-days ramp up to a peak in <b>month ' + r.peakMonth +
+      '</b> at ' + fmt.md1(r.peakMd) + ' MD and back down. That peak needs <b>' +
       fmt.fte(r.peakFte) + ' FTE (' + r.peakHeadcount + ' people)</b> — the level you actually staff to. ' +
-      'The average FTE above is the total effort levelled across the whole duration.</span></div>';
+      'The average FTE above is the total effort levelled evenly across the duration.</span></div>';
   }
 
   function renderWanResult(record) {
@@ -1029,9 +1001,9 @@
       '<div class="result-title">✓ WAN result — ' + esc(record.projectName) +
         ' <span class="tag tag-info">' + esc(record.projectCode) + '</span>' +
         ' <span class="tag tag-muted">' + esc(i.mode) + ' mode</span>' +
-        (r.usingSchedule ? ' <span class="tag tag-info">phased delivery</span>' : '') + '</div>' +
+        (isShaped(r) ? ' <span class="tag tag-info">bell curve</span>' : '') + '</div>' +
       warningsHtml(r.warnings) +
-      scheduleNoteHtml(r, i) +
+      distributionNoteHtml(r) +
       resultGridHtml(r, i) +
       '<div class="divider"><span>Effort by row</span></div>' + rowMathHtml(r.rows) +
       '<div class="divider"><span>How this number was reached</span></div>' + stepsHtml(r.steps);
@@ -1051,10 +1023,10 @@
         ' <span class="tag tag-info">' + esc(record.projectCode) + '</span>' +
         ' <span class="tag tag-muted">' + esc(i.mode) + ' mode</span>' +
         (i.stages && i.stages.length ? ' <span class="tag tag-muted">' + esc(i.stages.join(', ')) + '</span>' : '') +
-        (r.usingSchedule ? ' <span class="tag tag-info">phased delivery</span>' : '') +
+        (isShaped(r) ? ' <span class="tag tag-info">bell curve</span>' : '') +
       '</div>' +
       warningsHtml(r.warnings) +
-      scheduleNoteHtml(r, i) +
+      distributionNoteHtml(r) +
       resultGridHtml(r, i) +
       '<div class="divider"><span>Effort by row</span></div>' + rowMathHtml(r.rows) +
       '<div class="divider"><span>How this number was reached</span></div>' + stepsHtml(r.steps);
@@ -1227,17 +1199,17 @@
         '<span class="tag tag-muted">' + esc(rec.id) + '</span></p>' +
         '<p class="mt-3"><b>Calculated</b> ' + esc(fmt.dateTime(rec.savedAt)) + ' · ' +
         esc(i.mode) + ' mode · capacity ' + i.capacityMdPerMonth + ' MD per month</p>' +
-        scheduleNoteHtml(r, i) +
+        distributionNoteHtml(r) +
         '<div class="result-grid mt-3">' +
-          resultCell(r.usingSchedule ? 'FTE (avg)' : 'FTE', fmt.fte(r.fte)) +
+          resultCell(isShaped(r) ? 'FTE (avg)' : 'FTE', fmt.fte(r.fte)) +
           resultCell('Headcount', String(r.headcount)) +
           resultCell('Utilisation', fmt.pct(r.utilisationPct)) +
           resultCell('Total MD', fmt.md(r.totalMd)) +
-          resultCell(r.usingSchedule ? 'Avg / month' : 'Per month', fmt.md(r.mdPerMonth)) +
+          resultCell(isShaped(r) ? 'Avg / month' : 'Per month', fmt.md(r.mdPerMonth)) +
           resultCell('Sites', fmt.int(i.totalSites)) +
-          (r.usingSchedule ? resultCell('Peak FTE', fmt.fte(r.peakFte), null, false, true) : '') +
-          (r.usingSchedule ? resultCell('Peak HC', String(r.peakHeadcount), null, false, true) : '') +
-          (r.usingSchedule ? resultCell('Busiest', 'Mo ' + r.peakMonth, null, true) : '') +
+          (isShaped(r) ? resultCell('Peak FTE', fmt.fte(r.peakFte), null, false, true) : '') +
+          (isShaped(r) ? resultCell('Peak HC', String(r.peakHeadcount), null, false, true) : '') +
+          (isShaped(r) ? resultCell('Busiest', 'Mo ' + r.peakMonth, null, true) : '') +
         '</div>' +
         '<div class="divider"><span>Effort by row</span></div>' + rowMathHtml(r.rows) +
         '<div class="divider"><span>Working</span></div>' + stepsHtml(r.steps) +
@@ -1312,7 +1284,7 @@
         months: numVal('w-months') || null, startDate: val('w-start-date'), endDate: val('w-end-date'),
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
-        schedule: val('w-schedule'),
+        distribution: segValue('w-dist'),
         rows: S.wan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); })
       },
@@ -1322,7 +1294,7 @@
         sites: numVal('l-sites') || null, devices: numVal('l-devices'),
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
-        schedule: val('l-schedule'),
+        distribution: segValue('l-dist'),
         rows: S.lan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); })
       }
@@ -1353,7 +1325,7 @@
     if (w.migration) setSeg('w-migration', w.migration);
     if (w.abacos) setSeg('w-abacos', w.abacos);
     if (w.mode) setSeg('w-mode', w.mode);
-    setVal('w-schedule', w.schedule || '');
+    setSeg('w-dist', w.distribution === 'bell' ? 'bell' : 'flat');
 
     setVal('l-proj-name', l.projName || '');
     if (l.status) setSeg('l-status', l.status);
@@ -1366,9 +1338,8 @@
     if (l.flan) setSeg('l-flan', l.flan);
     if (l.mode) setSeg('l-mode', l.mode);
     setVal('l-fb-ovrd', l.fallbackOverride || '');
-    setVal('l-schedule', l.schedule || '');
+    setSeg('l-dist', l.distribution === 'bell' ? 'bell' : 'flat');
 
-    renderScheduleStatus('wan'); renderScheduleStatus('lan');
     renderStageChips();
     if (l.stages) {
       qsa('#l-stages .stage-chip').forEach(function (n) {
@@ -1547,6 +1518,9 @@
     setVal('set-capacity', S.settings.capacityMdPerMonth);
     setVal('set-migration', S.settings.migrationMdPerSite);
     setVal('set-complexity', S.settings.defaultComplexity);
+    setVal('set-email-to', S.settings.emailTo || '');
+    setVal('set-email-cc', S.settings.emailCc || '');
+    setVal('set-email-subject', S.settings.emailSubject || '');
 
     var st = DB.status();
     var host = el('settings-storage');
@@ -1672,6 +1646,104 @@
     var note = help.parentNode.querySelector('.field-help');
     if (note) {
       note.innerHTML = 'Adds <b>' + S.settings.migrationMdPerSite + ' MD per site</b> across the whole project when set to Yes.';
+    }
+  }
+
+  function saveEmailSettings() {
+    var to = (val('set-email-to') || '').trim();
+    var cc = (val('set-email-cc') || '').trim();
+    var subject = (val('set-email-subject') || '').trim() || D.DEFAULT_SETTINGS.emailSubject;
+    S.settings.emailTo = to;
+    S.settings.emailCc = cc;
+    S.settings.emailSubject = subject;
+    Promise.all([
+      DB.setSetting('emailTo', to),
+      DB.setSetting('emailCc', cc),
+      DB.setSetting('emailSubject', subject)
+    ]).then(function () {
+      renderSettingsPage();
+      U.toast('Email settings saved.', 'ok');
+    });
+  }
+
+  /* ============================================================== email == */
+
+  function emailSubjectFor(record) {
+    var tpl = S.settings.emailSubject || D.DEFAULT_SETTINGS.emailSubject;
+    return tpl.replace(/\{project\}/gi, record.projectName || 'Untitled');
+  }
+
+  /* The rows that go in the email, for both the HTML and plain-text versions. */
+  function emailFields(record) {
+    var r = record.results, i = record.inputs;
+    var rows = [
+      ['Project name', record.projectName || '—'],
+      ['Project code', record.projectCode || '—'],
+      ['Type', record.type],
+      ['Total man-days', fmt.md1(r.totalMd) + ' MD'],
+      [isShaped(r) ? 'FTE required (average)' : 'FTE required', fmt.fte(r.fte)],
+      ['Headcount', String(r.headcount)]
+    ];
+    if (isShaped(r)) {
+      rows.push(['Peak FTE (bell curve)', fmt.fte(r.peakFte)]);
+      rows.push(['Peak headcount', String(r.peakHeadcount)]);
+    }
+    rows.push(['Duration', fmt.months(i.months)]);
+    rows.push(['Total sites', fmt.int(i.totalSites)]);
+    return rows;
+  }
+
+  function emailHtml(record) {
+    var body = emailFields(record).map(function (rw) {
+      return '<tr><td style="padding:6px 12px;border:1px solid #d0d5dd;color:#475569">' + esc(rw[0]) +
+        '</td><td style="padding:6px 12px;border:1px solid #d0d5dd;font-weight:600;color:#0f172a">' + esc(rw[1]) + '</td></tr>';
+    }).join('');
+    return '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#0f172a">' +
+      '<p>Hi,</p><p>Please find the DPM FTE estimate for <b>' + esc(record.projectName) + '</b> below.</p>' +
+      '<table style="border-collapse:collapse;border:1px solid #d0d5dd">' +
+      '<tr><th style="padding:8px 12px;text-align:left;background:#2563eb;color:#ffffff;border:1px solid #2563eb">Field</th>' +
+      '<th style="padding:8px 12px;text-align:left;background:#2563eb;color:#ffffff;border:1px solid #2563eb">Value</th></tr>' +
+      body + '</table>' +
+      '<p style="color:#64748b;font-size:12px;margin-top:16px">Generated by the DPM FTE Calculator.</p></div>';
+  }
+
+  function emailText(record) {
+    var rows = emailFields(record);
+    var width = rows.reduce(function (m, rw) { return Math.max(m, rw[0].length); }, 0);
+    var lines = rows.map(function (rw) {
+      return rw[0] + new Array(width - rw[0].length + 2).join(' ') + ': ' + rw[1];
+    });
+    return 'DPM FTE estimate\n\n' + lines.join('\n') + '\n\nGenerated by the DPM FTE Calculator.';
+  }
+
+  function openMailto(to, cc, subject, body) {
+    var q = [];
+    if (cc) q.push('cc=' + encodeURIComponent(cc));
+    q.push('subject=' + encodeURIComponent(subject));
+    q.push('body=' + encodeURIComponent(body));
+    window.location.href = 'mailto:' + (to || '') + '?' + q.join('&');
+  }
+
+  function emailResult(side) {
+    var record = side === 'wan' ? S.wan.record : S.lan.record;
+    if (!record) { U.toast('Run a ' + side.toUpperCase() + ' calculation first.', 'warn'); return; }
+
+    var to = S.settings.emailTo || '';
+    var cc = S.settings.emailCc || '';
+    var subject = emailSubjectFor(record);
+
+    /* Host mode gets a real Outlook draft with a formatted HTML table via COM;
+       anywhere else falls back to the default mail client through mailto. */
+    if (DB.status().mode === 'host') {
+      DB.sendOutlookEmail({ to: to, cc: cc, subject: subject, htmlBody: emailHtml(record) })
+        .then(function () { U.toast('Outlook draft opened — review and send it.', 'ok'); })
+        .catch(function (err) {
+          openMailto(to, cc, subject, emailText(record));
+          U.toast('Opened your mail app instead (' + (err.message || 'Outlook unavailable') + ').', 'warn');
+        });
+    } else {
+      openMailto(to, cc, subject, emailText(record));
+      U.toast('Opening your mail app…', 'ok');
     }
   }
 
@@ -1822,11 +1894,11 @@
       EX.exportRecord(S.wan.record);
     });
     el('w-save-project').addEventListener('click', saveCurrentAsProject);
+    el('w-email').addEventListener('click', function () { emailResult('wan'); });
     el('w-assign-dpms').addEventListener('click', function () { openDpmPicker('wan'); });
-    el('w-sites').addEventListener('input', function () { renderWanAllocBadge(); renderScheduleStatus('wan'); });
+    el('w-sites').addEventListener('input', renderWanAllocBadge);
     el('w-start-date').addEventListener('input', function () { recalcDuration('wan'); });
     el('w-end-date').addEventListener('input', function () { recalcDuration('wan'); });
-    el('w-schedule').addEventListener('input', function () { renderScheduleStatus('wan'); });
     el('w-add-sites').addEventListener('keydown', function (e) { if (e.key === 'Enter') addWanRow(); });
 
     /* LAN */
@@ -1844,11 +1916,11 @@
       EX.exportRecord(S.lan.record);
     });
     el('l-save-project').addEventListener('click', saveCurrentAsProject);
+    el('l-email').addEventListener('click', function () { emailResult('lan'); });
     el('l-assign-dpms').addEventListener('click', function () { openDpmPicker('lan'); });
-    el('l-sites').addEventListener('input', function () { renderLanAllocBadge(); renderScheduleStatus('lan'); });
+    el('l-sites').addEventListener('input', renderLanAllocBadge);
     el('l-start-date').addEventListener('input', function () { recalcDuration('lan'); });
     el('l-end-date').addEventListener('input', function () { recalcDuration('lan'); });
-    el('l-schedule').addEventListener('input', function () { renderScheduleStatus('lan'); });
     el('l-add-sites').addEventListener('keydown', function (e) { if (e.key === 'Enter') addLanRow(); });
 
     /* Records */
@@ -1922,6 +1994,13 @@
       setVal('set-migration', D.DEFAULT_SETTINGS.migrationMdPerSite);
       setVal('set-complexity', D.DEFAULT_SETTINGS.defaultComplexity);
       saveSettings();
+    });
+    el('set-email-save').addEventListener('click', saveEmailSettings);
+    el('set-email-reset').addEventListener('click', function () {
+      setVal('set-email-to', D.DEFAULT_SETTINGS.emailTo);
+      setVal('set-email-cc', D.DEFAULT_SETTINGS.emailCc);
+      setVal('set-email-subject', D.DEFAULT_SETTINGS.emailSubject);
+      saveEmailSettings();
     });
     el('maint-resync').addEventListener('click', function () {
       DB.probeServer()

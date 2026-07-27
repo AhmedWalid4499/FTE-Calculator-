@@ -175,7 +175,10 @@
     capacityMdPerMonth: 18,   // productive man-days one full-time DPM delivers per month
     defaultComplexity: 100,   // percent
     migrationMdPerSite: 0.5,  // uplift applied per site when WAN migration support is in scope
-    dateDaysPerMonth: 30.44   // average calendar month, used to convert a date range to months
+    dateDaysPerMonth: 30.44,  // average calendar month, used to convert a date range to months
+    emailTo: '',              // default recipient for the result email (blank = fill in Outlook)
+    emailCc: 'karim.elzarka.ext@orange.com',
+    emailSubject: 'DPM FTE Estimate - {project}'   // {project} is replaced with the project name
   };
 
   /* ------------------------------------------- explanatory copy (help) --- */
@@ -189,7 +192,8 @@
     pmRole:       'Records whether the DPM is also acting as Project Manager. Recorded only - it does not change the calculated effort.',
     duration:     'How long the project runs, in months. Total effort is spread evenly across this period, so a longer duration lowers the FTE requirement for the same amount of work.',
     durationDates:'Choose a start and end date and the duration is derived from it, using an average month of 30.44 days. Fractional months are kept - they are not rounded away.',
-    deliverySchedule:'Optional. By default the tool spreads effort evenly across every month, which assumes the same number of sites is delivered each month - rarely true in practice. Enter one number per month (the sites delivered that month, e.g. 10, 20, 30, 25, 15) to model a real ramp-up and ramp-down. The total effort and the average FTE do not change; what it adds is the PEAK FTE - the team size the busiest month actually needs. The numbers should add up to the total sites.',
+    distribution:'How the man-days are spread across the months. Flat spreads them evenly - the simple baseline. Bell curve spreads them as a normal distribution: effort ramps up to a peak in the middle of the project and back down, which is closer to how a real rollout behaves. The total effort and the average FTE are the same either way; the bell curve adds the PEAK FTE - the larger team the busiest mid-project month needs - and lets you picture the project shape.',
+    emailResult:'Opens a ready-to-review email in Outlook with a table of the project name, man-days and FTE. When the app is started with the launcher it uses Outlook directly (with a formatted table); otherwise it opens your default mail app with a plain-text version. Recipients and subject come from Settings. The email is never sent automatically - you review and send it.',
     totalSites:   'The number of sites in the whole project. Your allocation rows must add up to exactly this number before the estimate will run - that check is what stops sites being double-counted or forgotten.',
     projectType:  'Overlay, Underlay or Both. Recorded for reporting only - it does not change the calculated effort.',
     migration:    'When migration support is in scope, an extra 0.5 man-days per site is added on top of the product effort, covering cut-over coordination and rollback readiness.',
@@ -210,8 +214,8 @@
     fte:          'Full-Time Equivalent: monthly workload divided by one DPM\'s monthly capacity. 2.34 FTE means the work needs about two and a third full-time people.',
     headcount:    'FTE rounded up to a whole number of people, because you cannot staff a third of a person.',
     utilisation:  'FTE divided by headcount. Low utilisation means the last person is only partly loaded and may have spare capacity for other work.',
-    peakFte:      'The FTE needed in the busiest month of the delivery schedule, rather than the average. This is the realistic staffing level - you have to cover the peak, not the average. Only shown when a delivery schedule is entered.',
-    peakHeadcount:'The busiest month\'s FTE rounded up to whole people. The maximum team size the schedule demands at any point.',
+    peakFte:      'The FTE needed in the busiest month, rather than the average. This is the realistic staffing level - you have to cover the peak, not the average. Only shown when the bell-curve distribution is used.',
+    peakHeadcount:'The busiest month\'s FTE rounded up to whole people. The maximum team size the bell curve demands at its mid-project peak.',
     dpmAssign:    'Who is assigned to the project. Recorded on the estimate and included in exports - it does not change the calculated effort.'
   };
 

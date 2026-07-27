@@ -232,6 +232,31 @@ function Invoke-ApiRoute {
         return
     }
 
+    # --- open an Outlook draft (never sends) ------------------------------
+    # Opens a compose window with the result table for the user to review and
+    # send themselves. Uses Outlook COM, so it only works on this Windows
+    # machine with Outlook installed; the browser falls back to mailto if this
+    # returns ok:false. It deliberately calls Display(), never Send().
+    if ($Path -eq '/api/email') {
+        if ($Method -ne 'POST') { Send-Error $Stream 405 'Method Not Allowed' 'POST only'; return }
+        $req = $Body | ConvertFrom-Json
+        try {
+            $outlook = New-Object -ComObject Outlook.Application
+            $mail = $outlook.CreateItem(0)   # olMailItem
+            if ($req.to) { $mail.To = [string]$req.to }
+            if ($req.cc) { $mail.CC = [string]$req.cc }
+            $mail.Subject  = [string]$req.subject
+            $mail.HTMLBody = [string]$req.htmlBody
+            $mail.Display($false)            # review-and-send; do NOT auto-send
+            Write-Log "opened Outlook draft: $($req.subject)" 'Green'
+            Send-Json -Stream $Stream -Object @{ ok = $true }
+        } catch {
+            Write-Log "Outlook draft failed: $($_.Exception.Message)" 'DarkYellow'
+            Send-Json -Stream $Stream -Object @{ ok = $false; error = $_.Exception.Message }
+        }
+        return
+    }
+
     # --- records collection ----------------------------------------------
     if ($Path -eq '/api/records') {
         switch ($Method) {

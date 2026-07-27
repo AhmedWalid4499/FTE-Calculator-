@@ -297,11 +297,14 @@
 
   /* ------------------------------------------------------ shared sheets -- */
 
+  /* usingSchedule kept for records saved before the bell-curve change. */
+  function isShaped(r) { return !!(r.usingBell || r.usingSchedule); }
+
   function headlineCells(record) {
     var r = record.results, i = record.inputs;
-    if (r.usingSchedule) {
-      /* With a phased delivery the peak is the number you staff to, so it leads
-         and is highlighted; the average sits beside it for budgeting. */
+    if (isShaped(r)) {
+      /* With a bell curve the peak is the number you staff to, so it leads and
+         is highlighted; the average sits beside it for budgeting. */
       return [
         { label: 'Peak FTE', value: r.peakFte, format: FMT.fte, highlight: true,
           note: 'busiest month (month ' + r.peakMonth + ')' },
@@ -397,32 +400,31 @@
   /* ------------------------------------------------ monthly distribution -- */
 
   /* The month-by-month view the effort is spread over. Always available (even
-     the even-spread case produces one bucket per month), and genuinely useful
-     once a delivery schedule turns it into a ramp. A numeric table plus two
+     the flat case produces one bucket per month), and genuinely useful once the
+     bell-curve distribution turns it into a ramp. A numeric table plus two
      embedded graphs: effort with a cumulative-delivery curve, and the FTE each
-     month against the average - which is exactly what a phased plan reveals. */
+     month against the average - which is exactly what the bell curve reveals. */
   function monthlyDistributionSheet(wb, record) {
     var r = record.results, i = record.inputs;
     var monthly = r.monthly || [];
     if (!monthly.length) return;
 
-    var scheduled = !!r.usingSchedule;
+    var bell = !!(r.usingBell || r.usingSchedule);
     var total = r.totalMd || 0;
     var maxMd = monthly.reduce(function (m, x) { return Math.max(m, x.md); }, 0);
     var peakMonth = r.peakMonth || 0;
     var avgFte = r.fte || 0;
 
-    var lastCol = scheduled ? 8 : 7;
-    var widths = scheduled ? [10, 12, 16, 12, 16, 12, 16, 14] : [10, 16, 12, 16, 12, 16, 14];
-    var ws = newSheet(wb, 'Monthly distribution', widths);
+    var lastCol = 7;
+    var ws = newSheet(wb, 'Monthly distribution', [10, 16, 12, 16, 12, 16, 14]);
 
     titleBlock(ws, lastCol, 'MONTHLY DISTRIBUTION', record.projectName,
-      (scheduled
-        ? 'Effort phased to the delivery schedule — the busiest month drives the staffing.'
-        : 'Effort spread evenly across the duration — enter a delivery schedule to model a ramp.') +
+      (bell
+        ? 'Man-days follow a bell curve — the mid-project peak drives the staffing.'
+        : 'Man-days spread evenly across the duration — switch to the bell curve to model a ramp.') +
       '   ·   ' + record.projectCode + '   ·   ' + record.type);
 
-    var row = kpiBand(ws, 5, scheduled ? [
+    var row = kpiBand(ws, 5, bell ? [
       { label: 'Peak FTE', value: r.peakFte, format: FMT.fte, highlight: true, note: 'busiest month' },
       { label: 'Busiest month', value: peakMonth, format: FMT.int, note: 'month number' },
       { label: 'Peak effort', value: r.peakMd, format: FMT.md, note: 'MD that month' },
@@ -444,35 +446,26 @@
       cum += m.md;
       var share = total > 0 ? round2(m.md / total * 100) : 0;
       var cumPct = total > 0 ? round2(cum / total * 100) : 0;
-      var base = ['Month ' + m.month];
-      if (scheduled) base.push(m.sites);
-      base.push(m.md, m.fte, barText(m.md, maxMd), share, round2(cum), cumPct);
-      return base;
+      return ['Month ' + m.month, m.md, m.fte, barText(m.md, maxMd), share, round2(cum), cumPct];
     });
 
-    var columns = [{ name: 'Month', width: 10 }];
-    if (scheduled) columns.push({ name: 'Sites', numFmt: FMT.int, align: 'right', total: 'sum' });
-    columns.push(
+    var columns = [
+      { name: 'Month', width: 10, total: 'label', totalLabel: 'TOTAL' },
       { name: 'Effort (MD)', numFmt: FMT.md, align: 'right', total: 'sum' },
       { name: 'FTE', numFmt: FMT.fte, align: 'right' },
       { name: 'Load', width: 16, align: 'left' },
       { name: 'Share', numFmt: FMT.pct, align: 'right' },
       { name: 'Cumulative MD', numFmt: FMT.md, align: 'right' },
       { name: 'Cumulative', numFmt: FMT.pct, align: 'right' }
-    );
-    /* one column carries the totals label */
-    columns[0].total = 'label';
-    columns[0].totalLabel = 'TOTAL';
+    ];
 
     row = addTable(ws, {
       row: row, hint: 'Monthly', theme: 'TableStyleMedium2', totals: true,
       columns: columns, rows: tableRows
     });
-    if (scheduled && Math.abs(monthly.reduce(function (t, m) { return t + (m.sites || 0); }, 0) - i.totalSites) > 1e-9) {
-      row = note(ws, row, 'The schedule does not add up to the ' + i.totalSites +
-        ' total sites; effort was phased using its proportions.');
-    }
-    row = note(ws, row, 'A partial final month (from a fractional duration) carries only its share of a month.');
+    row = note(ws, row, bell
+      ? 'The man-days follow a normal distribution centred on the middle of the project.'
+      : 'A partial final month (from a fractional duration) carries only its share of a month.');
     row += 1;
 
     /* ---- the graphs ---- */
@@ -485,7 +478,7 @@
     var running = 0;
     monthly.forEach(function (m) { running += m.md; cumPctSeries.push(total > 0 ? round2(running / total * 100) : 0); });
     var barColours = monthly.map(function (m) {
-      return (scheduled && m.month === peakMonth) ? CH.peak : CH.bar;
+      return (bell && m.month === peakMonth) ? CH.peak : CH.bar;
     });
 
     var combo = chartToPng({
@@ -531,7 +524,7 @@
         layout: { padding: 8 },
         plugins: {
           legend: { labels: { color: CH.ink, font: { size: 13 } } },
-          title: { display: true, text: scheduled ? 'FTE needed each month vs. the average' : 'FTE per month (even spread)', color: CH.ink, font: { size: 16, weight: 'bold' } }
+          title: { display: true, text: bell ? 'FTE needed each month vs. the average' : 'FTE per month (even spread)', color: CH.ink, font: { size: 16, weight: 'bold' } }
         },
         scales: {
           x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
@@ -544,8 +537,8 @@
     row = placeChart(wb, ws, combo, 0, row, 770, 297);
     row = placeChart(wb, ws, fteChart, 0, row, 770, 275);
 
-    if (scheduled) {
-      note(ws, row, 'The gap between the tallest bar and the dashed average line is the staffing the even-spread view hides.');
+    if (bell) {
+      note(ws, row, 'The gap between the tallest bar and the dashed average line is the staffing the flat view hides.');
     }
   }
 
@@ -592,16 +585,16 @@
       inputFacts.splice(6, 0, ['Priced from', r.usedTierRows ? 'Tier rows' : ('Fallback tier ' + (r.fallbackTier || '')),
         r.usedTierRows ? 'Each tier row priced separately' : 'All sites priced at one tier']);
     }
-    inputFacts.push(['Delivery schedule',
-      r.usingSchedule ? (i.deliverySchedule || []).join(', ') : 'Even spread',
-      r.usingSchedule ? 'Sites delivered each month; effort is phased to match'
-                      : 'Effort spread evenly across the duration']);
+    inputFacts.push(['Effort distribution',
+      isShaped(r) ? 'Bell curve (normal)' : 'Flat (even)',
+      isShaped(r) ? 'Man-days ramp to a mid-project peak and back down'
+                  : 'Man-days spread evenly across the duration']);
     row = addFactTable(ws, row, 'Inputs that affect the result', inputFacts);
 
     var resultFacts = [
       ['Total effort (MD)', r.totalMd, 'Sum of every allocation row' + (isWan && r.migrationMd ? ' plus the migration uplift' : '')],
-      [r.usingSchedule ? 'Average effort per month (MD)' : 'Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
-      [r.usingSchedule ? 'FTE (average)' : 'FTE required', r.fte, r.mdPerMonth + ' MD per month / ' + i.capacityMdPerMonth + ' MD capacity'],
+      [isShaped(r) ? 'Average effort per month (MD)' : 'Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
+      [isShaped(r) ? 'FTE (average)' : 'FTE required', r.fte, r.mdPerMonth + ' MD per month / ' + i.capacityMdPerMonth + ' MD capacity'],
       ['Headcount', r.headcount, 'FTE rounded up to whole people'],
       ['Utilisation (%)', r.utilisationPct, r.fte + ' FTE / ' + r.headcount + ' headcount']
     ];
@@ -610,11 +603,11 @@
         ? (i.migrationMdPerSite + ' MD x ' + i.totalSites + ' sites') : 'Not in scope']);
       resultFacts.unshift(['Base effort (MD)', r.baseMd, 'Allocation rows only']);
     }
-    if (r.usingSchedule) {
-      resultFacts.push(['Busiest month', 'Month ' + r.peakMonth, 'Highest effort in the delivery schedule']);
-      resultFacts.push(['Peak effort per month (MD)', r.peakMd, 'The busiest month of the schedule']);
+    if (isShaped(r)) {
+      resultFacts.push(['Busiest month', 'Month ' + r.peakMonth, 'Peak of the bell curve']);
+      resultFacts.push(['Peak effort per month (MD)', r.peakMd, 'The busiest month of the curve']);
       resultFacts.push(['Peak FTE', r.peakFte, r.peakMd + ' MD / ' + i.capacityMdPerMonth + ' MD capacity — staff to this']);
-      resultFacts.push(['Peak headcount', r.peakHeadcount, 'Peak FTE rounded up — the largest team the schedule needs']);
+      resultFacts.push(['Peak headcount', r.peakHeadcount, 'Peak FTE rounded up — the largest team the curve needs']);
     }
     row = addFactTable(ws, row, 'Result', resultFacts, { theme: 'TableStyleLight11' });
 
@@ -637,7 +630,7 @@
       'Row effort = base rate x complexity x sites.   ' + record.projectCode +
       '   ·   ' + record.type + '   ·   ' + i.mode + ' mode');
 
-    var arow = kpiBand(as, 5, r.usingSchedule ? [
+    var arow = kpiBand(as, 5, isShaped(r) ? [
       { label: 'Peak FTE', value: r.peakFte, format: FMT.fte, highlight: true, note: 'busiest month' },
       { label: 'FTE (average)', value: r.fte, format: FMT.fte, note: 'levelled' },
       { label: 'Total effort', value: r.totalMd, format: FMT.md, note: 'man-days' },

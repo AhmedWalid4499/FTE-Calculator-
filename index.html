@@ -167,9 +167,12 @@
         </div>
 
         <div class="field mt-3">
-          <label for="w-schedule" data-help="deliverySchedule">Sites delivered per month <span class="tag tag-muted">optional — ramp-up / ramp-down</span></label>
-          <input type="text" id="w-schedule" placeholder="e.g. 10, 20, 30, 25, 15 — leave empty for an even spread" autocomplete="off">
-          <span class="field-help" id="w-schedule-status">Leave empty and effort is spread evenly across the duration. Enter one number per month — the sites delivered that month — to model a realistic ramp; they should add up to the total sites.</span>
+          <span class="field-label" data-help="distribution">Effort distribution</span>
+          <div class="segmented" id="w-dist" style="max-width:360px" role="group" aria-label="Effort distribution">
+            <button type="button" data-val="flat" class="active">Flat (even)</button>
+            <button type="button" data-val="bell">Bell curve (normal)</button>
+          </div>
+          <span class="field-help">Flat spreads the man-days evenly. Bell curve spreads them as a normal distribution — a mid-project peak with a ramp up and down — and reports the peak FTE that peak needs.</span>
         </div>
       </div>
 
@@ -285,6 +288,7 @@
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="w-calculate">Calculate WAN FTE</button>
         <button class="btn btn-outline" id="w-export">↓ Export to Excel</button>
+        <button class="btn btn-outline" id="w-email" data-help="emailResult">✉ Email result</button>
         <button class="btn btn-ghost" id="w-save-project">⊞ Save as project</button>
       </div>
     </section>
@@ -342,9 +346,12 @@
         </div>
 
         <div class="field mt-3">
-          <label for="l-schedule" data-help="deliverySchedule">Sites delivered per month <span class="tag tag-muted">optional — ramp-up / ramp-down</span></label>
-          <input type="text" id="l-schedule" placeholder="e.g. 5, 10, 15, 12, 8 — leave empty for an even spread" autocomplete="off">
-          <span class="field-help" id="l-schedule-status">Leave empty and effort is spread evenly across the duration. Enter one number per month — the sites delivered that month — to model a realistic ramp; they should add up to the total sites.</span>
+          <span class="field-label" data-help="distribution">Effort distribution</span>
+          <div class="segmented" id="l-dist" style="max-width:360px" role="group" aria-label="Effort distribution">
+            <button type="button" data-val="flat" class="active">Flat (even)</button>
+            <button type="button" data-val="bell">Bell curve (normal)</button>
+          </div>
+          <span class="field-help">Flat spreads the man-days evenly. Bell curve spreads them as a normal distribution — a mid-project peak with a ramp up and down — and reports the peak FTE that peak needs.</span>
         </div>
       </div>
 
@@ -469,6 +476,7 @@
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="l-calculate">Calculate LAN FTE</button>
         <button class="btn btn-outline" id="l-export">↓ Export to Excel</button>
+        <button class="btn btn-outline" id="l-email" data-help="emailResult">✉ Email result</button>
         <button class="btn btn-ghost" id="l-save-project">⊞ Save as project</button>
       </div>
     </section>
@@ -667,6 +675,35 @@
         <div class="btn-row">
           <button class="btn btn-primary" id="set-save">Save settings</button>
           <button class="btn btn-ghost btn-sm" id="set-reset">Restore defaults</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>Email result — recipients</div></div>
+        <p class="card-note">
+          Used by the <b>Email result</b> button on the WAN and LAN pages. Change these any time.
+          The email opens as a draft for you to review — it is never sent automatically.
+        </p>
+        <div class="grid g3">
+          <div class="field">
+            <label for="set-email-to">To <span class="tag tag-muted">optional</span></label>
+            <input type="text" id="set-email-to" placeholder="leave blank to fill in Outlook" autocomplete="off">
+            <span class="field-help">Separate multiple addresses with a semicolon.</span>
+          </div>
+          <div class="field">
+            <label for="set-email-cc">CC</label>
+            <input type="text" id="set-email-cc" placeholder="name@orange.com" autocomplete="off">
+            <span class="field-help">Copied on every result email.</span>
+          </div>
+          <div class="field">
+            <label for="set-email-subject">Subject</label>
+            <input type="text" id="set-email-subject" placeholder="DPM FTE Estimate - {project}" autocomplete="off">
+            <span class="field-help"><span class="code">{project}</span> is replaced with the project name.</span>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="set-email-save">Save email settings</button>
+          <button class="btn btn-ghost btn-sm" id="set-email-reset">Restore defaults</button>
         </div>
       </div>
 

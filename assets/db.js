@@ -263,6 +263,17 @@
     return Promise.reject(new Error('no disk backend available'));
   }
 
+  /* Ask the local host to open an Outlook draft (host mode only). The server
+     opens the compose window for the user to review; it never sends. */
+  function sendOutlookEmail(payload) {
+    if (!_serverOnline) return Promise.reject(new Error('the local app host is not running'));
+    return api('/api/email', { method: 'POST', body: JSON.stringify(payload) })
+      .then(function (res) {
+        if (res && res.ok) return res;
+        throw new Error((res && res.error) || 'Outlook could not open the draft');
+      });
+  }
+
   function saveRecord(record) {
     record.sync = record.sync || {};
     return putLocal(STORE_RECORDS, record)
@@ -526,6 +537,7 @@
     reconnectFolder: reconnectFolder,
     forgetFolder: forgetFolder,
     folderSupported: function () { return FOLDER_SUPPORTED; },
+    sendOutlookEmail: sendOutlookEmail,
 
     saveRecord: saveRecord,
     listRecords: listRecords,

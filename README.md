@@ -95,15 +95,25 @@ utilisation  = FTE / headcount
 The **Rates & Method** page lists every published rate, a worked example and a
 glossary. Every result also shows its own arithmetic, step by step.
 
-### Delivery schedule (ramp-up / ramp-down)
+### Effort distribution: flat or bell curve
 
-By default the effort is spread evenly across every month, which assumes the
-same number of sites is delivered each month — rarely true in practice. Fill in
-**Sites delivered per month** (one number per month, e.g. `10, 20, 30, 25, 15`)
-and the tool phases the effort to match and reports the **peak FTE**: the team
-size the busiest month actually needs, which is what you staff to. The total
-effort and the average FTE are unchanged — the schedule only reveals the peak.
-Leave it empty for the even spread. Available on both WAN and LAN.
+**Flat** spreads the man-days evenly across the months — the simple baseline.
+**Bell curve (normal)** spreads them as a normal distribution: effort ramps up
+to a peak in the middle of the project and back down, which is closer to how a
+real rollout behaves. The bell curve reports the **peak FTE** — the larger team
+the busiest mid-project month needs, which is what you staff to. The total
+effort and the average FTE are the same either way; the bell only reveals the
+peak and lets you picture the project shape. Available on both WAN and LAN.
+
+### Email the result
+
+The **Email result** button opens a ready-to-review email with a table of the
+project name, man-days and FTE. Started with the launcher it opens an Outlook
+draft directly (with a formatted table); otherwise it opens your default mail
+app with a plain-text version. The recipients (CC defaults to
+`karim.elzarka.ext@orange.com`) and the subject are set in **Settings → Email**
+and can be changed any time. The email is never sent automatically — you review
+and send it.
 
 ### Fields that do not affect the result
 

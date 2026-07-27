@@ -1,7 +1,8 @@
 @echo off
 title DPM FTE Calculator
 cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0server\serve.ps1"
+rem -Sta puts PowerShell in a single-threaded apartment, which Outlook COM (the "Email result" button) requires.
+powershell.exe -NoProfile -Sta -ExecutionPolicy Bypass -File "%~dp0server\serve.ps1"
 if errorlevel 1 (
   echo.
   echo   The server could not start. The message above explains why.
