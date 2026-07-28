@@ -295,12 +295,7 @@
     return out;
   }
 
-  /* Categorical palette for the composition chart (one colour per product/tier). */
-  var CAT = ['#2563eb', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#dc2626',
-             '#059669', '#9333ea', '#ca8a04', '#0369a1', '#be185d', '#65a30d'];
-
-  /* The per-month series shared by the workbook and the email, so both draw the
-     identical distribution. */
+  /* The per-month series used by the workbook's distribution charts. */
   function monthlySeries(record) {
     var r = record.results;
     var monthly = r.monthly || [];
@@ -373,47 +368,6 @@
       },
       plugins: [whiteBg]
     };
-  }
-
-  function compositionChartConfig(record) {
-    var rows = record.results.rows || [];
-    var labels = rows.map(function (x) { return x.product || x.label; });
-    var vals = rows.map(function (x) { return x.md; });
-    return {
-      type: 'bar',
-      data: { labels: labels, datasets: [{ data: vals, backgroundColor: labels.map(function (_, idx) { return CAT[idx % CAT.length]; }), borderRadius: 3 }] },
-      options: {
-        responsive: false, animation: false, devicePixelRatio: 1, layout: { padding: 8 },
-        plugins: {
-          legend: { display: false },
-          title: { display: true, text: 'Man-days by ' + (record.type === 'WAN' ? 'product' : 'tier'), color: CH.ink, font: { size: 16, weight: 'bold' } }
-        },
-        scales: {
-          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
-          y: { beginAtZero: true, title: { display: true, text: 'Man-days', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } }
-        }
-      },
-      plugins: [whiteBg]
-    };
-  }
-
-  /* PNG graphs for the email, each tagged with a content-id the HTML references
-     via <img src="cid:...">. Returns [] when Chart.js is unavailable. */
-  function recordCharts(record) {
-    var out = [];
-    var r = record.results || {};
-    if ((r.rows || []).length) {
-      var comp = chartToPng(compositionChartConfig(record), 1200, 520);
-      if (comp) out.push({ cid: 'chartComposition', base64: comp, title: 'Man-days by ' + (record.type === 'WAN' ? 'product' : 'tier') });
-    }
-    if ((r.monthly || []).length) {
-      var s = monthlySeries(record);
-      var combo = chartToPng(comboChartConfig(s), 1400, 560);
-      if (combo) out.push({ cid: 'chartMonthly', base64: combo, title: 'Monthly distribution' });
-      var fte = chartToPng(fteChartConfig(s), 1400, 520);
-      if (fte) out.push({ cid: 'chartFte', base64: fte, title: 'FTE per month' });
-    }
-    return out;
   }
 
   /* ------------------------------------------------------ shared sheets -- */
@@ -1026,7 +980,6 @@
     exportRecord: exportRecord,
     exportAllRecords: exportAllRecords,
     exportProject: exportProject,
-    exportDpmDirectory: exportDpmDirectory,
-    recordCharts: recordCharts
+    exportDpmDirectory: exportDpmDirectory
   };
 })(window);

@@ -1704,74 +1704,81 @@
 
   /* ---- HTML email (Outlook COM path) ---------------------------------- */
 
-  /* Outlook renders with the Word engine, so the email is table-based with
-     inline styles only, and the graphs are referenced as cid: attachments -
-     Outlook blocks base64 data-URI images, so cid is the only reliable way. */
+  /* Outlook renders email with the Word engine, which ignores a lot of CSS:
+     no shorthand (font:, background:), no text-transform, no letter-spacing,
+     and cell fills only show reliably through the bgcolor attribute. So the
+     markup below is deliberately old-fashioned - nested tables, bgcolor/align
+     attributes, and longhand inline styles only - which is what makes it
+     actually format in Outlook rather than only in a browser preview. */
+  var EMAIL_FF = 'font-family:Segoe UI,Arial,sans-serif;';
+  var EMAIL_BLUE = '#1d4ed8';
+
+  function emailSectionTable(title, headerCells, aligns, dataRows) {
+    var colspan = headerCells ? headerCells.length : 2;
+    var out = '<tr><td style="padding:16px 0 0 0;">' +
+      '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">' +
+      '<tr><td colspan="' + colspan + '" bgcolor="' + EMAIL_BLUE + '" style="padding:8px 14px;' + EMAIL_FF +
+        'font-size:12px;font-weight:bold;color:#ffffff;border:1px solid ' + EMAIL_BLUE + ';">' + esc(title) + '</td></tr>';
+
+    if (headerCells) {
+      out += '<tr>' + headerCells.map(function (c, idx) {
+        return '<td bgcolor="#eef2f7" align="' + aligns[idx] + '" style="padding:7px 12px;' + EMAIL_FF +
+          'font-size:12px;font-weight:bold;color:#334155;border:1px solid #d0d5dd;">' + esc(c) + '</td>';
+      }).join('') + '</tr>';
+    }
+
+    out += dataRows + '</table></td></tr>';
+    return out;
+  }
+
   function emailFactTable(title, rows, highlightFirst) {
     var body = rows.map(function (rw, idx) {
       var hi = highlightFirst && idx === 0;
-      var bg = hi ? '#eff6ff' : (idx % 2 ? '#f8fafc' : '#ffffff');
-      var valColour = hi ? '#1d4ed8' : '#0f172a';
-      var valWeight = hi ? '700' : '600';
-      var valSize = hi ? '16px' : '14px';
+      var bg = hi ? '#eff6ff' : (idx % 2 ? '#f4f6f9' : '#ffffff');
+      var valColour = hi ? EMAIL_BLUE : '#0f172a';
+      var valSize = hi ? '15px' : '13px';
       return '<tr>' +
-        '<td style="padding:8px 14px;border:1px solid #e2e8f0;background:' + bg + ';font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#475569;width:45%">' + esc(rw[0]) + '</td>' +
-        '<td style="padding:8px 14px;border:1px solid #e2e8f0;background:' + bg + ';font-family:Segoe UI,Arial,sans-serif;font-size:' + valSize + ';font-weight:' + valWeight + ';color:' + valColour + '">' + esc(rw[1]) + '</td>' +
+        '<td width="46%" bgcolor="' + bg + '" style="padding:8px 14px;border:1px solid #e2e8f0;' + EMAIL_FF +
+          'font-size:13px;color:#475569;">' + esc(rw[0]) + '</td>' +
+        '<td bgcolor="' + bg + '" style="padding:8px 14px;border:1px solid #e2e8f0;' + EMAIL_FF +
+          'font-size:' + valSize + ';font-weight:bold;color:' + valColour + ';">' + esc(rw[1]) + '</td>' +
         '</tr>';
     }).join('');
-    return '<tr><td style="padding:18px 0 6px"><span style="font-family:Segoe UI,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:.06em;color:#1d4ed8;text-transform:uppercase">' + esc(title) + '</span></td></tr>' +
-      '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1">' + body + '</table></td></tr>';
+    return emailSectionTable(title, null, null, body);
   }
 
   function emailAllocationTable(record) {
-    var r = record.results, isWan = record.type === 'WAN';
-    var head = '<tr style="background:#1d4ed8">' +
-      ['<th style="padding:8px 12px;text-align:left;color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:12px;border:1px solid #1d4ed8">' + (isWan ? 'Product / mode' : 'Tier') + '</th>',
-       '<th style="padding:8px 12px;text-align:right;color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:12px;border:1px solid #1d4ed8">Sites</th>',
-       '<th style="padding:8px 12px;text-align:right;color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:12px;border:1px solid #1d4ed8">Complexity</th>',
-       '<th style="padding:8px 12px;text-align:right;color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:12px;border:1px solid #1d4ed8">Man-days</th>',
-       '<th style="padding:8px 12px;text-align:right;color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:12px;border:1px solid #1d4ed8">Share</th>'].join('') +
-      '</tr>';
-    var body = (r.rows || []).map(function (row, idx) {
-      var bg = idx % 2 ? '#f8fafc' : '#ffffff';
-      var name = row.product ? (row.product + ' — ' + row.connectivityMode) : row.label;
-      function cell(v, align) {
-        return '<td style="padding:7px 12px;text-align:' + align + ';border:1px solid #e2e8f0;background:' + bg +
-          ';font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#0f172a">' + esc(v) + '</td>';
-      }
-      return '<tr>' + cell(name, 'left') + cell(fmt.int(row.sites), 'right') + cell(row.complexityPct + '%', 'right') +
-        cell(fmt.md(row.md), 'right') + cell(row.pctOfTotal + '%', 'right') + '</tr>';
+    var isWan = record.type === 'WAN';
+    var headers = [(isWan ? 'Product / mode' : 'Tier'), 'Sites', 'Complexity', 'Man-days', 'Share'];
+    var aligns = ['left', 'right', 'right', 'right', 'right'];
+    var body = (record.results.rows || []).map(function (row, idx) {
+      var bg = idx % 2 ? '#f4f6f9' : '#ffffff';
+      var name = row.product ? (row.product + ' / ' + row.connectivityMode) : row.label;
+      var vals = [name, fmt.int(row.sites), row.complexityPct + '%', fmt.md(row.md), row.pctOfTotal + '%'];
+      return '<tr>' + vals.map(function (v, ci) {
+        return '<td bgcolor="' + bg + '" align="' + aligns[ci] + '" style="padding:7px 12px;border:1px solid #e2e8f0;' +
+          EMAIL_FF + 'font-size:13px;color:#0f172a;">' + esc(v) + '</td>';
+      }).join('') + '</tr>';
     }).join('');
-    return '<tr><td style="padding:18px 0 6px"><span style="font-family:Segoe UI,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:.06em;color:#1d4ed8;text-transform:uppercase">Allocation breakdown</span></td></tr>' +
-      '<tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:1px solid #cbd5e1">' + head + body + '</table></td></tr>';
+    return emailSectionTable('Allocation breakdown', headers, aligns, body);
   }
 
-  function emailChartsSection(charts) {
-    if (!charts.length) return '';
-    return charts.map(function (c) {
-      return '<tr><td style="padding:18px 0 6px"><span style="font-family:Segoe UI,Arial,sans-serif;font-size:12px;font-weight:700;letter-spacing:.06em;color:#1d4ed8;text-transform:uppercase">' + esc(c.title) + '</span></td></tr>' +
-        '<tr><td><img src="cid:' + esc(c.cid) + '" alt="' + esc(c.title) + '" width="640" style="display:block;width:640px;max-width:100%;height:auto;border:1px solid #e2e8f0"></td></tr>';
-    }).join('');
-  }
-
-  function emailHtml(record, charts) {
-    var r = record.results;
+  function emailHtml(record) {
     var banner =
-      '<tr><td style="padding:16px 20px;background:#1d4ed8">' +
-        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:18px;font-weight:700;color:#ffffff">DPM FTE Estimate</div>' +
-        '<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#bfdbfe;margin-top:2px">' + esc(record.projectName) + '</div>' +
+      '<tr><td bgcolor="' + EMAIL_BLUE + '" style="padding:16px 20px;">' +
+        '<span style="' + EMAIL_FF + 'font-size:19px;font-weight:bold;color:#ffffff;">DPM FTE Estimate</span><br>' +
+        '<span style="' + EMAIL_FF + 'font-size:14px;color:#dbeafe;">' + esc(record.projectName) + '</span>' +
       '</td></tr>';
-    return '<table role="presentation" width="680" cellpadding="0" cellspacing="0" style="border-collapse:collapse;max-width:680px">' +
+    return '<table width="640" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;background-color:#ffffff;">' +
       banner +
-      '<tr><td style="padding:0 20px 20px">' +
-        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">' +
-          '<tr><td style="padding:14px 0"><span style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#334155">Please find the DPM FTE estimate below.</span></td></tr>' +
+      '<tr><td style="padding:16px 20px 20px 20px;">' +
+        '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">' +
+          '<tr><td style="' + EMAIL_FF + 'font-size:14px;color:#334155;padding:0 0 4px 0;">Please find the DPM FTE estimate below.</td></tr>' +
           emailFactTable('Key results', emailKeyResults(record), true) +
           emailFactTable('Project details', emailProjectDetails(record), false) +
           emailAllocationTable(record) +
-          emailChartsSection(charts || []) +
-          '<tr><td style="padding:20px 0 4px"><span style="font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#94a3b8">Generated by the DPM FTE Calculator' +
-            ' · ' + esc(record.projectCode || '') + '</span></td></tr>' +
+          '<tr><td style="' + EMAIL_FF + 'font-size:11px;color:#94a3b8;padding:16px 0 0 0;">Generated by the DPM FTE Calculator · ' +
+            esc(record.projectCode || '') + '</td></tr>' +
         '</table>' +
       '</td></tr></table>';
   }
@@ -1787,7 +1794,6 @@
       return rw[0] + new Array(width - rw[0].length + 2).join(' ') + ': ' + rw[1];
     });
     return 'DPM FTE ESTIMATE\n\n' + lines.join('\n') +
-      '\n\n(Graphs are included when the email is opened through the launcher.)' +
       '\n\nGenerated by the DPM FTE Calculator.';
   }
 
@@ -1807,13 +1813,11 @@
     var cc = S.settings.emailCc || '';
     var subject = emailSubjectFor(record);
 
-    /* Host mode gets a real Outlook draft with a formatted HTML table and the
-       graphs embedded as cid attachments; anywhere else the browser can only
-       hand a plain-text summary to the default mail client through mailto. */
+    /* Host mode gets a real Outlook draft with the formatted HTML table;
+       anywhere else the browser can only hand a plain-text summary to the
+       default mail client through mailto. */
     if (DB.status().mode === 'host') {
-      U.toast('Building the email…', 'info');
-      var charts = EX.recordCharts(record);   // PNG graphs with cids
-      DB.sendOutlookEmail({ to: to, cc: cc, subject: subject, htmlBody: emailHtml(record, charts), images: charts })
+      DB.sendOutlookEmail({ to: to, cc: cc, subject: subject, htmlBody: emailHtml(record) })
         .then(function () { U.toast('Outlook draft opened — review and send it.', 'ok'); })
         .catch(function (err) {
           openMailto(to, cc, subject, emailText(record));
