@@ -233,26 +233,50 @@ function Invoke-ApiRoute {
     }
 
     # --- open an Outlook draft (never sends) ------------------------------
-    # Opens a compose window with the result table for the user to review and
-    # send themselves. Uses Outlook COM, so it only works on this Windows
-    # machine with Outlook installed; the browser falls back to mailto if this
-    # returns ok:false. It deliberately calls Display(), never Send().
+    # Opens a compose window with the result table and graphs for the user to
+    # review and send themselves. Uses Outlook COM, so it only works on this
+    # Windows machine with Outlook installed; the browser falls back to mailto
+    # if this returns ok:false. Graphs arrive as base64 PNGs and are embedded as
+    # cid: attachments (Outlook blocks base64 data-URI images in the body). It
+    # deliberately calls Display(), never Send().
     if ($Path -eq '/api/email') {
         if ($Method -ne 'POST') { Send-Error $Stream 405 'Method Not Allowed' 'POST only'; return }
         $req = $Body | ConvertFrom-Json
+        $tempFiles = @()
         try {
             $outlook = New-Object -ComObject Outlook.Application
             $mail = $outlook.CreateItem(0)   # olMailItem
             if ($req.to) { $mail.To = [string]$req.to }
             if ($req.cc) { $mail.CC = [string]$req.cc }
-            $mail.Subject  = [string]$req.subject
+            $mail.Subject = [string]$req.subject
+
+            # Embed each graph as a hidden attachment tagged with a content-id,
+            # which the HTML body references via <img src="cid:...">.
+            if ($req.images) {
+                foreach ($img in $req.images) {
+                    if (-not $img.base64 -or -not $img.cid) { continue }
+                    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('fte_' + [Guid]::NewGuid().ToString('N') + '.png')
+                    [System.IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String([string]$img.base64))
+                    $tempFiles += $tmp
+                    $att = $mail.Attachments.Add($tmp)
+                    try {
+                        $pa = $att.PropertyAccessor
+                        $pa.SetProperty('http://schemas.microsoft.com/mapi/proptag/0x3712001F', [string]$img.cid) # PR_ATTACH_CONTENT_ID
+                        $pa.SetProperty('http://schemas.microsoft.com/mapi/proptag/0x7FFE000B', $true)             # PR_ATTACHMENT_HIDDEN
+                    } catch { }
+                }
+            }
+
             $mail.HTMLBody = [string]$req.htmlBody
             $mail.Display($false)            # review-and-send; do NOT auto-send
-            Write-Log "opened Outlook draft: $($req.subject)" 'Green'
+            Write-Log "opened Outlook draft: $($req.subject) ($(@($req.images).Count) graph(s))" 'Green'
             Send-Json -Stream $Stream -Object @{ ok = $true }
         } catch {
             Write-Log "Outlook draft failed: $($_.Exception.Message)" 'DarkYellow'
             Send-Json -Stream $Stream -Object @{ ok = $false; error = $_.Exception.Message }
+        } finally {
+            # The attachment data was copied into the item, so the temp PNGs can go.
+            foreach ($f in $tempFiles) { try { Remove-Item $f -Force -ErrorAction SilentlyContinue } catch {} }
         }
         return
     }

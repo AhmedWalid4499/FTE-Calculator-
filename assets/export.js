@@ -295,6 +295,127 @@
     return out;
   }
 
+  /* Categorical palette for the composition chart (one colour per product/tier). */
+  var CAT = ['#2563eb', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#dc2626',
+             '#059669', '#9333ea', '#ca8a04', '#0369a1', '#be185d', '#65a30d'];
+
+  /* The per-month series shared by the workbook and the email, so both draw the
+     identical distribution. */
+  function monthlySeries(record) {
+    var r = record.results;
+    var monthly = r.monthly || [];
+    var total = r.totalMd || 0;
+    var bell = !!(r.usingBell || r.usingSchedule);
+    var peakMonth = r.peakMonth || 0;
+    var cum = 0, cumPct = [];
+    monthly.forEach(function (m) { cum += m.md; cumPct.push(total > 0 ? round2(cum / total * 100) : 0); });
+    return {
+      labels: monthly.map(function (m) { return 'M' + m.month; }),
+      mds: monthly.map(function (m) { return m.md; }),
+      ftes: monthly.map(function (m) { return m.fte; }),
+      cumPct: cumPct,
+      barColours: monthly.map(function (m) { return (bell && m.month === peakMonth) ? CH.peak : CH.bar; }),
+      bell: bell,
+      avgFte: r.fte || 0
+    };
+  }
+
+  function comboChartConfig(s) {
+    return {
+      type: 'bar',
+      data: {
+        labels: s.labels,
+        datasets: [
+          { type: 'bar', label: 'Man-days', data: s.mds, backgroundColor: s.barColours,
+            borderRadius: 3, yAxisID: 'y', order: 2 },
+          { type: 'line', label: 'Cumulative delivery %', data: s.cumPct,
+            borderColor: CH.line, backgroundColor: CH.line, tension: 0.25, pointRadius: 3,
+            yAxisID: 'y1', order: 1 }
+        ]
+      },
+      options: {
+        responsive: false, animation: false, devicePixelRatio: 1, layout: { padding: 8 },
+        plugins: {
+          legend: { labels: { color: CH.ink, font: { size: 13 } } },
+          title: { display: true, text: 'Effort per month and cumulative delivery', color: CH.ink, font: { size: 16, weight: 'bold' } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
+          y: { beginAtZero: true, title: { display: true, text: 'Man-days', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } },
+          y1: { position: 'right', beginAtZero: true, suggestedMax: 100, title: { display: true, text: 'Cumulative %', color: CH.ink }, ticks: { color: CH.ink }, grid: { drawOnChartArea: false } }
+        }
+      },
+      plugins: [whiteBg]
+    };
+  }
+
+  function fteChartConfig(s) {
+    return {
+      type: 'bar',
+      data: {
+        labels: s.labels,
+        datasets: [
+          { type: 'bar', label: 'FTE that month', data: s.ftes, backgroundColor: s.barColours, borderRadius: 3, order: 2 },
+          { type: 'line', label: 'Average FTE (' + round2(s.avgFte) + ')', data: s.labels.map(function () { return s.avgFte; }),
+            borderColor: CH.avg, borderDash: [6, 4], borderWidth: 2, pointRadius: 0, order: 1 }
+        ]
+      },
+      options: {
+        responsive: false, animation: false, devicePixelRatio: 1, layout: { padding: 8 },
+        plugins: {
+          legend: { labels: { color: CH.ink, font: { size: 13 } } },
+          title: { display: true, text: s.bell ? 'FTE needed each month vs. the average' : 'FTE per month (even spread)', color: CH.ink, font: { size: 16, weight: 'bold' } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
+          y: { beginAtZero: true, title: { display: true, text: 'FTE', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } }
+        }
+      },
+      plugins: [whiteBg]
+    };
+  }
+
+  function compositionChartConfig(record) {
+    var rows = record.results.rows || [];
+    var labels = rows.map(function (x) { return x.product || x.label; });
+    var vals = rows.map(function (x) { return x.md; });
+    return {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ data: vals, backgroundColor: labels.map(function (_, idx) { return CAT[idx % CAT.length]; }), borderRadius: 3 }] },
+      options: {
+        responsive: false, animation: false, devicePixelRatio: 1, layout: { padding: 8 },
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: 'Man-days by ' + (record.type === 'WAN' ? 'product' : 'tier'), color: CH.ink, font: { size: 16, weight: 'bold' } }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
+          y: { beginAtZero: true, title: { display: true, text: 'Man-days', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } }
+        }
+      },
+      plugins: [whiteBg]
+    };
+  }
+
+  /* PNG graphs for the email, each tagged with a content-id the HTML references
+     via <img src="cid:...">. Returns [] when Chart.js is unavailable. */
+  function recordCharts(record) {
+    var out = [];
+    var r = record.results || {};
+    if ((r.rows || []).length) {
+      var comp = chartToPng(compositionChartConfig(record), 1200, 520);
+      if (comp) out.push({ cid: 'chartComposition', base64: comp, title: 'Man-days by ' + (record.type === 'WAN' ? 'product' : 'tier') });
+    }
+    if ((r.monthly || []).length) {
+      var s = monthlySeries(record);
+      var combo = chartToPng(comboChartConfig(s), 1400, 560);
+      if (combo) out.push({ cid: 'chartMonthly', base64: combo, title: 'Monthly distribution' });
+      var fte = chartToPng(fteChartConfig(s), 1400, 520);
+      if (fte) out.push({ cid: 'chartFte', base64: fte, title: 'FTE per month' });
+    }
+    return out;
+  }
+
   /* ------------------------------------------------------ shared sheets -- */
 
   /* usingSchedule kept for records saved before the bell-curve change. */
@@ -468,71 +589,12 @@
       : 'A partial final month (from a fractional duration) carries only its share of a month.');
     row += 1;
 
-    /* ---- the graphs ---- */
+    /* ---- the graphs (same configs the email uses) ---- */
     row = sectionLabel(ws, row, 'Visualisation');
 
-    var labels = monthly.map(function (m) { return 'M' + m.month; });
-    var mds = monthly.map(function (m) { return m.md; });
-    var ftes = monthly.map(function (m) { return m.fte; });
-    var cumPctSeries = [];
-    var running = 0;
-    monthly.forEach(function (m) { running += m.md; cumPctSeries.push(total > 0 ? round2(running / total * 100) : 0); });
-    var barColours = monthly.map(function (m) {
-      return (bell && m.month === peakMonth) ? CH.peak : CH.bar;
-    });
-
-    var combo = chartToPng({
-      type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [
-          { type: 'bar', label: 'Man-days', data: mds, backgroundColor: barColours,
-            borderRadius: 3, yAxisID: 'y', order: 2 },
-          { type: 'line', label: 'Cumulative delivery %', data: cumPctSeries,
-            borderColor: CH.line, backgroundColor: CH.line, tension: 0.25, pointRadius: 3,
-            yAxisID: 'y1', order: 1 }
-        ]
-      },
-      options: {
-        responsive: false, animation: false, devicePixelRatio: 1,
-        layout: { padding: 8 },
-        plugins: {
-          legend: { labels: { color: CH.ink, font: { size: 13 } } },
-          title: { display: true, text: 'Effort per month and cumulative delivery', color: CH.ink, font: { size: 16, weight: 'bold' } }
-        },
-        scales: {
-          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
-          y: { beginAtZero: true, title: { display: true, text: 'Man-days', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } },
-          y1: { position: 'right', beginAtZero: true, suggestedMax: 100, title: { display: true, text: 'Cumulative %', color: CH.ink }, ticks: { color: CH.ink }, grid: { drawOnChartArea: false } }
-        }
-      },
-      plugins: [whiteBg]
-    }, 1400, 540);
-
-    var fteChart = chartToPng({
-      type: 'bar',
-      data: {
-        labels: labels,
-        datasets: [
-          { type: 'bar', label: 'FTE that month', data: ftes, backgroundColor: barColours, borderRadius: 3, order: 2 },
-          { type: 'line', label: 'Average FTE (' + round2(avgFte) + ')', data: labels.map(function () { return avgFte; }),
-            borderColor: CH.avg, borderDash: [6, 4], borderWidth: 2, pointRadius: 0, order: 1 }
-        ]
-      },
-      options: {
-        responsive: false, animation: false, devicePixelRatio: 1,
-        layout: { padding: 8 },
-        plugins: {
-          legend: { labels: { color: CH.ink, font: { size: 13 } } },
-          title: { display: true, text: bell ? 'FTE needed each month vs. the average' : 'FTE per month (even spread)', color: CH.ink, font: { size: 16, weight: 'bold' } }
-        },
-        scales: {
-          x: { grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
-          y: { beginAtZero: true, title: { display: true, text: 'FTE', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } }
-        }
-      },
-      plugins: [whiteBg]
-    }, 1400, 500);
+    var series = monthlySeries(record);
+    var combo = chartToPng(comboChartConfig(series), 1400, 540);
+    var fteChart = chartToPng(fteChartConfig(series), 1400, 500);
 
     row = placeChart(wb, ws, combo, 0, row, 770, 297);
     row = placeChart(wb, ws, fteChart, 0, row, 770, 275);
@@ -964,6 +1026,7 @@
     exportRecord: exportRecord,
     exportAllRecords: exportAllRecords,
     exportProject: exportProject,
-    exportDpmDirectory: exportDpmDirectory
+    exportDpmDirectory: exportDpmDirectory,
+    recordCharts: recordCharts
   };
 })(window);
