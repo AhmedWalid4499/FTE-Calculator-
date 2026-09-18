@@ -637,6 +637,29 @@
          ['Device count', i.devices, 'Only used when no tier rows were entered'],
          ['DPM acting as PM', i.pmRole, 'Reporting only']];
     row = addFactTable(ws, row, 'Recorded only - does not affect the result', recorded, { theme: 'TableStyleLight10' });
+
+    var notesText = (record.notes || '').trim();
+    if (notesText) {
+      row = sectionLabel(ws, row, 'Notes');
+      /* Merge across BOTH columns and rows: a merged cell never auto-fits, and
+         one row is height-capped by Excel (~409pt), which clips a long note.
+         Spanning enough whole rows (each a normal height) instead lets the
+         wrapped text keep going, so nothing is silently hidden. */
+      var lines = 0;
+      notesText.split('\n').forEach(function (ln) { lines += Math.max(1, Math.ceil(ln.length / 100)); });
+      var span = Math.min(80, Math.max(3, lines));
+      ws.mergeCells(row, 1, row + span - 1, 6);
+      var nc = ws.getCell(row, 1);
+      nc.value = notesText;
+      nc.alignment = { vertical: 'top', wrapText: true, indent: 1 };
+      nc.font = { size: 11, color: { argb: INK } };
+      nc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFBEB' } };
+      var nb = { style: 'thin', color: { argb: 'FFFDE68A' } };
+      nc.border = { top: nb, left: nb, right: nb, bottom: nb };
+      for (var nr = row; nr < row + span; nr++) ws.getRow(nr).height = 15;
+      row += span + 1;
+    }
+
     note(ws, row, 'Every figure above was frozen when Calculate was pressed, so this workbook always describes one single calculation.');
 
     /* ---- Allocation ---- */
@@ -880,7 +903,8 @@
         ['Project type', w.projectType || '-', 'Recorded only'],
         ['Migration support', w.migration || '-', ''],
         ['ABACOS', w.abacos || '-', 'Recorded only'],
-        ['DPM acting as PM', w.pmRole || '-', 'Recorded only']
+        ['DPM acting as PM', w.pmRole || '-', 'Recorded only'],
+        ['Notes', (w.notes || '').trim() || '-', 'Free text; does not affect the calculation']
       ]);
 
       row = addFactTable(ws, row, 'LAN side', [
@@ -894,7 +918,8 @@
         ['Device count', l.devices || 0, 'Only used when no tier rows exist'],
         ['FLAN used', l.flan || '-', 'Recorded only'],
         ['Stages', (l.stages || []).join(', ') || '-', 'By Stage mode only'],
-        ['DPM acting as PM', l.pmRole || '-', 'Recorded only']
+        ['DPM acting as PM', l.pmRole || '-', 'Recorded only'],
+        ['Notes', (l.notes || '').trim() || '-', 'Free text; does not affect the calculation']
       ]);
       note(ws, row, 'A project stores the inputs you typed. Open it in the app and press Calculate to produce a result.');
 
