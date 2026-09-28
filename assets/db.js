@@ -41,10 +41,23 @@
   /* ------------------------------------------------------------ events --- */
 
   function onStatusChange(fn) { _listeners.push(fn); }
+
+  /* Only when something actually changed: the host is re-probed every time
+     the window regains focus, and re-rendering on each of those would throw
+     away whatever the user was halfway through typing in Settings. */
+  var _lastStatus = null;
   function emitStatus() {
     var s = status();
+    var key = JSON.stringify(s);
+    if (key === _lastStatus) return;
+    _lastStatus = key;
     _listeners.forEach(function (fn) { try { fn(s); } catch (e) { console.error(e); } });
   }
+
+  /* Who is using the app, for deciding whose pending records may be written
+     into a shared folder. Set by the page once it knows. */
+  var _myEmail = '';
+  function setIdentity(email) { _myEmail = String(email || '').toLowerCase(); }
 
   /* -------------------------------------------------------- indexeddb ---- */
 
@@ -307,6 +320,8 @@
       defaultDataRoot: _serverInfo ? _serverInfo.defaultDataRoot : null,
       isDefaultRoot: _serverInfo ? _serverInfo.isDefaultRoot !== false : true,
       shared: isSharedLocation(),
+      localOnly: !!(_serverInfo && _serverInfo.localOnly),
+      missingRoot: (_serverInfo && _serverInfo.missingRoot) || '',
       folderSupported: FOLDER_SUPPORTED,
       folderName: _folderName,
       folderReady: _folderReady,
@@ -357,6 +372,9 @@
     /* Keep the "came from a colleague" marker through re-saves, e.g. when a
        planned start month is edited on the Team capacity page. */
     var pulled = !!record.sync.pulled;
+    /* Where this record already lives on disk, if anywhere. A write that
+       fails is retried later only into that same place (see flushPending). */
+    var home = record.sync.loc || currentLoc();
     return putLocal(STORE_RECORDS, record)
       .then(function () { return writeRecordToDisk(record); })
       .then(function (file) {
@@ -366,7 +384,7 @@
         });
       })
       .catch(function () {
-        record.sync = { state: 'pending', file: null, at: new Date().toISOString(), pulled: pulled };
+        record.sync = { state: 'pending', file: null, loc: home, at: new Date().toISOString(), pulled: pulled };
         return putLocal(STORE_RECORDS, record)
           /* A failed write means our belief about the backend is out of date.
              Re-check so the status chip stops claiming we are saving to disk
@@ -392,7 +410,8 @@
   function updateRecord(record) {
     return getLocal(STORE_RECORDS, record.id).then(function (local) {
       var rec = Object.assign({}, record);
-      rec.sync = { pulled: local ? !!(local.sync && local.sync.pulled) : isSharedLocation() };
+      rec.sync = { pulled: local ? !!(local.sync && local.sync.pulled) : isSharedLocation(),
+                   loc: local && local.sync ? local.sync.loc : currentLoc() };
       return saveRecord(rec);
     });
   }
@@ -473,7 +492,19 @@
   function flushPending() {
     if (!_serverOnline && !_folderReady) return Promise.resolve(0);
     return flushTombstones().then(listRecords).then(function (rows) {
-      var pending = rows.filter(function (r) { return !r.sync || r.sync.state !== 'saved'; });
+      /* Written out: this person's own work, and edits to a record that
+         already lives in this same place. Not written: someone else's record
+         waiting from a different place - after switching folders it would
+         otherwise be published into a shared folder it never belonged to. */
+      var loc = currentLoc();
+      var pending = rows.filter(function (r) {
+        var s = r.sync || {};
+        if (s.state === 'saved') return false;
+        if (s.loc && s.loc === loc) return true;
+        if (s.pulled) return false;
+        var by = r.createdBy && r.createdBy.email ? String(r.createdBy.email).toLowerCase() : '';
+        return !(by && _myEmail && by !== _myEmail);
+      });
       if (!pending.length) return 0;
       return pending.reduce(function (chain, rec) {
         return chain.then(function (n) {
@@ -619,14 +650,18 @@
      are never re-published, because either would resurrect a record someone
      deliberately deleted: estimates pulled from a shared folder (colleagues'),
      and estimates already written to this very location once. */
-  function publishLocal() {
+  function publishLocal(myEmail) {
     if (!_serverOnline && !_folderReady) return Promise.resolve(0);
     var loc = currentLoc();
+    var me = String(myEmail || '').toLowerCase();
     return Promise.all([readDiskRecords(), listRecords()]).then(function (res) {
       var onDisk = {};
       res[0].items.forEach(function (r) { onDisk[r.id] = true; });
       var mine = res[1].filter(function (r) {
         if (onDisk[r.id] || (r.sync && r.sync.pulled)) return false;
+        /* Stamped as somebody else's work: never ours to publish. */
+        var by = r.createdBy && r.createdBy.email ? String(r.createdBy.email).toLowerCase() : '';
+        if (me && by && by !== me) return false;
         return !(r.sync && r.sync.state === 'saved' && r.sync.loc === loc);
       });
       return mine.reduce(function (chain, rec) {
@@ -667,9 +702,50 @@
 
   function getHostConfig() { return api('/api/config'); }
 
-  /** Point the launcher at another data folder (null/'' = back to default). */
-  function setHostDataRoot(path, copyExisting) {
-    var body = path ? { dataRoot: path, copyExisting: !!copyExisting } : { reset: true };
+  /* Where the SharePoint team folder is synced on this PC (host mode only):
+     { candidates: [{ path, how: 'sharepoint'|'name', records }], linked }. */
+  function findTeamFolder(name, webPath) {
+    if (!_serverOnline) return Promise.resolve({ candidates: [], linked: false });
+    return api('/api/team-folder', { method: 'POST', body: JSON.stringify({ name: name, webPath: webPath }) });
+  }
+
+  /* The OneDrive work account signed in on this PC (host mode only). */
+  function whoami() {
+    if (!_serverOnline) return Promise.resolve(null);
+    return api('/api/whoami').catch(function () { return null; });
+  }
+
+  /* Copy this person's saved projects into the current location when no
+     project of that name is there yet - never overwriting one, and never
+     somebody else's (savedBy). Records are handled by publishLocal. */
+  function publishLocalProjects(myEmail) {
+    if (!_serverOnline && !_folderReady) return Promise.resolve(0);
+    var me = String(myEmail || '').toLowerCase();
+    var diskP = _serverOnline
+      ? api('/api/projects').then(function (res) { return (res && res.projects) || []; })
+      : readAllFromFolder('projects').then(function (res) { return res.items; });
+    return Promise.all([diskP, listProjects()]).then(function (res) {
+      var there = {};
+      res[0].forEach(function (p) { if (p && p.name) there[safeFileName(p.name).toLowerCase()] = true; });
+      var mine = res[1].filter(function (p) {
+        if (!p || !p.name || there[safeFileName(p.name).toLowerCase()]) return false;
+        var by = p.savedBy && p.savedBy.email ? String(p.savedBy.email).toLowerCase() : '';
+        return !(by && me && by !== me);
+      });
+      return mine.reduce(function (chain, p) {
+        return chain.then(function (n) { return saveProject(p).then(function () { return n + 1; }); });
+      }, Promise.resolve(0));
+    }).catch(function () { return 0; });
+  }
+
+  /**
+   * Point the launcher at another data folder. null/'' = back to the app's
+   * own folder; opts.localOnly also stops the team folder being re-linked.
+   */
+  function setHostDataRoot(path, copyExisting, opts) {
+    var body = path
+      ? { dataRoot: path, copyExisting: !!copyExisting }
+      : { reset: true, localOnly: !!(opts && opts.localOnly) };
     /* Re-probe either way: a failure part-way may still have moved the host. */
     return api('/api/config', { method: 'POST', body: JSON.stringify(body) })
       .then(function (res) { return probeServer().then(function () { return res; }); },
@@ -859,6 +935,10 @@
     publishLocal: publishLocal,
     getHostConfig: getHostConfig,
     setHostDataRoot: setHostDataRoot,
+    findTeamFolder: findTeamFolder,
+    whoami: whoami,
+    setIdentity: setIdentity,
+    publishLocalProjects: publishLocalProjects,
 
     saveProject: saveProject,
     listProjects: listProjects,

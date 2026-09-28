@@ -179,8 +179,40 @@
     emailTo: '',              // default recipient for the result email (blank = fill in Outlook)
     emailCc: 'karim.elzarka.ext@orange.com',
     emailSubject: 'DPM FTE Estimate - {project}',  // {project} is replaced with the project name
-    teamCapacityFte: null     // DPMs available for the team plan (null = size of the DPM Directory)
+    teamCapacityFte: null,    // DPMs available for the team plan (null = size of the DPM Directory)
+    userName: '',             // who is using this browser - stamped as "created by" on estimates
+    userEmail: '',
+    identityAsked: false      // the one-time "who are you?" question has been shown
   };
+
+  /* ------------------------------------------------------- team folder --- */
+
+  /* The SharePoint folder the whole team saves into. Everyone's app links to
+     its synced copy on their own PC, and OneDrive uploads each estimate. The
+     link opens only for people the folder is shared with. */
+  var TEAM_FOLDER = {
+    name: 'FTE - Website',
+    url: 'https://orange0-my.sharepoint.com/:f:/r/personal/ahmed_elbourgy_ext_orange_com/Documents/FTE%20-%20Website?d=w2cc15d09b7054e0f9191e741d90e0c3f&csf=1&web=1&e=aJtbL9',
+    owner: 'Ahmed Elbourgy'
+  };
+
+  /* The folder's plain SharePoint address (no sharing wrapper), which is how
+     OneDrive identifies the synced copy on each PC:
+     https://host/:f:/r/personal/x/Documents/FTE%20-%20Website?...
+       -> https://host/personal/x/Documents/FTE%20-%20Website */
+  function teamFolderWebPath() {
+    var m = /^(https:\/\/[^/]+)(?:\/:[a-z]:\/[a-z])?(\/[^?#]*)/i.exec(TEAM_FOLDER.url);
+    return m ? m[1] + m[2] : '';
+  }
+
+  /* "ahmed.elbourgy.ext@orange.com" -> "Ahmed Elbourgy", for anyone who is
+     not in the DPM Directory. */
+  function nameFromEmail(email) {
+    var local = String(email || '').split('@')[0].replace(/[._-](ext|external|adm)$/i, '');
+    return local.split(/[._-]+/).filter(Boolean).map(function (w) {
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    }).join(' ');
+  }
 
   /* ------------------------------------------- explanatory copy (help) --- */
 
@@ -194,6 +226,9 @@
     importSites:  'Build the allocation rows from a spreadsheet instead of typing them. Upload an .xlsx or .csv with one row per site (or per group of sites with a count). WAN needs a product and a connectivity mode per row; LAN needs a device count or a tier. You map the columns and see a preview before anything changes. Download the template for the expected layout.',
     teamCapacity: 'How many full-time DPMs are available for these projects. Monthly demand above this line means the team is overbooked that month. Leave it blank to use the number of people in the DPM Directory.',
     sharedFolder: 'Point everyone at the same folder - a SharePoint or Teams document library synced to each PC through OneDrive - and every estimate saved by anyone lands in one place. The Team capacity page then plans across the whole team, not just your own estimates. Each person sets this once on their own PC.',
+    teamFolder:   'The SharePoint folder the team saves into. First sync it to your PC: open the link and choose "Add shortcut to My files". With Start FTE Calculator.cmd the app then finds it and links it by itself; in Chrome or Edge press "Connect the team folder" and pick it; other browsers cannot save into it. OneDrive uploads every estimate to SharePoint within seconds, and everyone who has the folder sees the same estimates and the same Team capacity plan.',
+    you:          'Your name and email are stamped on every estimate you create, as "Created by", so the team can see whose estimate is whose. With the launcher they are read from your OneDrive work account; otherwise set them here once.',
+    createdBy:    'The person who created this estimate. Later changes to its notes or start month record who made them, too.',
     pmRole:       'Records whether the DPM is also acting as Project Manager. Recorded only - it does not change the calculated effort.',
     duration:     'How long the project runs, in months. Total effort is spread evenly across this period, so a longer duration lowers the FTE requirement for the same amount of work.',
     durationDates:'Choose a start and end date and the duration is derived from it, using an average month of 30.44 days. Fractional months are kept - they are not rounded away.',
@@ -290,6 +325,9 @@
     DPMS: DPMS,
     DPM_ROLES: DPM_ROLES,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+    TEAM_FOLDER: TEAM_FOLDER,
+    teamFolderWebPath: teamFolderWebPath,
+    nameFromEmail: nameFromEmail,
     HELP: HELP,
     GLOSSARY: GLOSSARY,
     INFORMATIONAL_FIELDS: INFORMATIONAL_FIELDS

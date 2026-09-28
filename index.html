@@ -618,8 +618,9 @@
         <div class="card-head"><div class="card-title"><span class="dot"></span>Filter</div>
           <span id="records-count" class="tag tag-muted"></span>
         </div>
-        <div class="grid g4 mb-0">
+        <div class="grid g5 mb-0">
           <div class="field"><label for="rec-search">Search</label><input type="text" id="rec-search" placeholder="Project name or code…" autocomplete="off"></div>
+          <div class="field"><label for="rec-owner" data-help="createdBy">Created by</label><select id="rec-owner"><option value="">Everyone</option></select></div>
           <div class="field"><label for="rec-type">Type</label><select id="rec-type"><option value="">All types</option><option>WAN</option><option>LAN</option></select></div>
           <div class="field"><label for="rec-status">Status</label><select id="rec-status"><option value="">All statuses</option><option>Active</option><option>Inactive</option></select></div>
           <div class="field"><label for="rec-sort">Sort by</label><select id="rec-sort">
@@ -773,6 +774,30 @@
       <div class="page-head">
         <h2>Settings</h2>
         <p>Assumptions that apply to every estimate, and where your data is stored.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>SharePoint team folder <span class="tag tag-muted" data-help="teamFolder">FTE - Website</span></div></div>
+        <div id="settings-team"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>You <span class="tag tag-muted">shown as “Created by”</span></div></div>
+        <div class="grid g3">
+          <div class="field">
+            <label for="set-user-name" data-help="you">Your name</label>
+            <input type="text" id="set-user-name" list="set-user-dpms" autocomplete="off">
+            <datalist id="set-user-dpms"></datalist>
+          </div>
+          <div class="field">
+            <label for="set-user-email">Your email</label>
+            <input type="email" id="set-user-email" autocomplete="off">
+          </div>
+          <div class="field"><span class="field-label">&nbsp;</span>
+            <div class="btn-row"><button class="btn btn-primary btn-sm" id="set-user-save">Save</button></div>
+          </div>
+        </div>
+        <p class="field-help mb-0" id="set-user-note"></p>
       </div>
 
       <div class="card">

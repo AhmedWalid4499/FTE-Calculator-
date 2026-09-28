@@ -11,12 +11,15 @@
       installs nothing.
 
     Data folder:
-      Defaults to .\data next to the app. Point it at a SharePoint / Teams
-      folder synced through OneDrive and the whole team reads and writes the
-      same estimates - that is what the Team capacity plan is built on. Set it
-      from Settings in the app (stored in config.json next to the app) or with
-      -DataRoot. Each record is its own file, so two people saving at the same
-      time never overwrite each other.
+      The team saves into one SharePoint folder, synced to each PC by
+      OneDrive. The app asks this server where that folder is synced
+      (/api/team-folder reads OneDrive's own list of synced locations) and
+      links it automatically, so every estimate lands in SharePoint without
+      anyone typing a path. Until it is synced - or if the user chooses their
+      own folder - estimates go to .\data next to the app. The choice is kept
+      in config.json next to the app, or forced with -DataRoot. Each record is
+      its own file, so two people saving at the same time never overwrite
+      each other.
 
     Security posture:
       * Binds to 127.0.0.1 only - never reachable from the network.
@@ -230,13 +233,128 @@ function Read-Config {
     catch { Write-Log "config.json is unreadable and was ignored" 'DarkYellow'; return $null }
 }
 
-function Save-ConfigDataRoot {
-    param([string]$Root)   # '' = default
-    if ([string]::IsNullOrWhiteSpace($Root)) {
+# config.json: { dataRoot, localOnly }. localOnly records that this person
+# chose the app's own folder over the SharePoint team folder, so the app does
+# not keep linking it again on every start.
+$script:LocalOnly = $false
+$script:MissingRoot = ''   # configured folder that did not exist at start-up
+
+function Save-Config {
+    param([string]$Root, [bool]$LocalOnly = $false)   # Root '' = default folder
+    $script:LocalOnly = $LocalOnly
+    if ([string]::IsNullOrWhiteSpace($Root) -and -not $LocalOnly) {
         if (Test-Path -LiteralPath $ConfigFile) { Remove-Item -LiteralPath $ConfigFile -Force }
         return
     }
-    Write-TextFile -Path $ConfigFile -Content (@{ dataRoot = $Root } | ConvertTo-Json)
+    $o = [ordered]@{}
+    if (-not [string]::IsNullOrWhiteSpace($Root)) { $o.dataRoot = $Root }
+    if ($LocalOnly) { $o.localOnly = $true }
+    Write-TextFile -Path $ConfigFile -Content ($o | ConvertTo-Json)
+}
+
+# ------------------------------------------------- OneDrive / SharePoint ----
+
+# The OneDrive accounts signed in on this PC (who the user is, and where each
+# account's files are synced to). Read from the user's own registry hive; no
+# network call, nothing to install.
+function Get-OneDriveAccounts {
+    $out = @()
+    foreach ($k in @(Get-ChildItem 'HKCU:\Software\Microsoft\OneDrive\Accounts' -ErrorAction SilentlyContinue)) {
+        $p = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+        $email  = [string](Get-Prop $p 'UserEmail')
+        $folder = [string](Get-Prop $p 'UserFolder')
+        if (-not $email -and -not $folder) { continue }
+        $out += [pscustomobject]@{
+            email    = $email
+            name     = [string](Get-Prop $p 'UserName')
+            folder   = $folder
+            business = ([string](Get-Prop $p 'Business') -eq '1')
+        }
+    }
+    return ,$out
+}
+
+function ConvertTo-FolderUrl {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return '' }
+    $u = [Uri]::UnescapeDataString($Url.Trim()).Replace('\', '/')
+    if (-not $u.EndsWith('/')) { $u += '/' }
+    return $u
+}
+
+# Where one OneDrive sync mount holds the folder at $Target (a SharePoint
+# address ending in '/'), or $null. $Namespace is the mount's SharePoint
+# address, $MountPoint its local folder.
+#  - A whole library is mounted at its root: the folder sits at the same
+#    relative path below the mount point.
+#  - A shortcut ("Add shortcut to My files") is mounted at the shortcut itself
+#    while its namespace is still the library root: the mount point IS the
+#    folder, confirmed by its name matching the folder's last segment.
+#  - A shortcut to a parent folder works the same way one level up: the mount
+#    point stands in for that parent, so its name must match that parent.
+function Resolve-MountedFolder {
+    param([string]$Target, [string]$Namespace, [string]$MountPoint)
+    if (-not $Target -or -not $Namespace -or -not $MountPoint) { return $null }
+    if (-not $Target.StartsWith($Namespace, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    $segs = @(($Target.Substring($Namespace.Length).TrimEnd('/')) -split '/' | Where-Object { $_ })
+    if (-not $segs.Count) { return $MountPoint }
+    $leaf = Split-Path -Leaf $MountPoint
+    for ($s = 0; $s -lt $segs.Count; $s++) {
+        if ($s -gt 0 -and -not ($leaf -ieq $segs[$s - 1])) { continue }
+        $p = Join-Path $MountPoint ($segs[$s..($segs.Count - 1)] -join '\')
+        if (Test-Path -LiteralPath $p -PathType Container) { return $p }
+    }
+    if ($leaf -ieq $segs[-1]) { return $MountPoint }
+    return $null
+}
+
+# Where the SharePoint team folder is synced on this PC, most certain first.
+#  1. OneDrive's sync engine lists every synced location with its SharePoint
+#     address, so the exact folder is found however it is named locally -
+#     whether it is the owner's own OneDrive or a library synced from Teams.
+#  2. "Add shortcut to My files" puts a shared folder in the root of each
+#     person's OneDrive under the folder's own name.
+function Find-TeamFolder {
+    param([string]$Name, [string]$WebPath)
+    $found = New-Object System.Collections.ArrayList
+    $seen  = @{}
+    $target = ConvertTo-FolderUrl $WebPath
+    $mounts = @()
+
+    foreach ($k in @(Get-ChildItem 'HKCU:\Software\SyncEngines\Providers\OneDrive' -ErrorAction SilentlyContinue)) {
+        $p  = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
+        $mp = [string](Get-Prop $p 'MountPoint')
+        if (-not $mp -or -not (Test-Path -LiteralPath $mp -PathType Container)) { continue }
+        $mounts += $mp
+        $ns = ConvertTo-FolderUrl ([string](Get-Prop $p 'UrlNamespace'))
+        if (-not $target -or -not $ns) { continue }
+        $path = Resolve-MountedFolder -Target $target -Namespace $ns -MountPoint $mp
+        if ($path -and -not $seen.ContainsKey($path.ToLowerInvariant())) {
+            $seen[$path.ToLowerInvariant()] = $true
+            [void]$found.Add([ordered]@{ path = $path; how = 'sharepoint' })
+        }
+    }
+
+    if ($Name) {
+        $roots = @($env:OneDriveCommercial, $env:OneDrive) + @((Get-OneDriveAccounts) | ForEach-Object { $_.folder }) + $mounts
+        $doneRoots = @{}
+        foreach ($r in $roots) {
+            if ([string]::IsNullOrWhiteSpace($r) -or $doneRoots.ContainsKey($r.ToLowerInvariant())) { continue }
+            $doneRoots[$r.ToLowerInvariant()] = $true
+            foreach ($d in @(Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue)) {
+                if (-not $d.Name.Equals($Name, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                if ($seen.ContainsKey($d.FullName.ToLowerInvariant())) { continue }
+                $seen[$d.FullName.ToLowerInvariant()] = $true
+                [void]$found.Add([ordered]@{ path = $d.FullName; how = 'name' })
+            }
+        }
+    }
+
+    foreach ($c in $found) {
+        $rd = Join-Path $c.path 'records'
+        $c.records = @(Get-ChildItem -LiteralPath $rd -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+    }
+    return ,$found
 }
 
 # ------------------------------------------------------- record storage ----
@@ -363,7 +481,45 @@ function Invoke-ApiRoute {
             dataRoot        = $script:DataRoot
             defaultDataRoot = $DefaultDataRoot
             isDefaultRoot   = (Test-IsDefaultRoot $script:DataRoot)
+            localOnly       = $script:LocalOnly
+            missingRoot     = $script:MissingRoot
             time            = (Get-Date).ToString('o')
+        })
+        return
+    }
+
+    # --- who is using this PC (for "created by" on estimates) ---------------
+    if ($Path -eq '/api/whoami') {
+        # Every signed-in work account; the browser picks the one whose
+        # OneDrive holds the data folder, since a PC can have more than one.
+        $work = @((Get-OneDriveAccounts) | Where-Object { $_.business -and $_.email })
+        Send-Json -Stream $Stream -Object ([ordered]@{
+            ok          = $true
+            accounts    = @($work | ForEach-Object { [ordered]@{ email = $_.email; name = $_.name; folder = $_.folder } })
+            windowsUser = [string]$env:USERNAME
+        })
+        return
+    }
+
+    # --- find the SharePoint team folder synced on this PC -----------------
+    if ($Path -eq '/api/team-folder') {
+        if ($Method -ne 'POST') { Send-Error $Stream 405 'Method Not Allowed' 'POST only'; return }
+        $req  = $Body | ConvertFrom-Json
+        $name = [string](Get-Prop $req 'name')
+        $web  = [string](Get-Prop $req 'webPath')
+        if ($name -and ($name -match '[\\/:*?"<>|]' -or $name -match '^\.+$')) {
+            Send-Error $Stream 400 'Bad Request' 'invalid folder name'; return
+        }
+        if ($web -and $web -notmatch '^https://[^/]+\.sharepoint\.com/') {
+            Send-Error $Stream 400 'Bad Request' 'webPath must be a sharepoint.com address'; return
+        }
+        $found = Find-TeamFolder -Name $name -WebPath $web
+        $current = $null
+        foreach ($c in $found) {
+            if ([System.IO.Path]::GetFullPath($c.path).TrimEnd('\') -ieq $script:DataRoot.TrimEnd('\')) { $current = $c.path }
+        }
+        Send-Json -Stream $Stream -Object ([ordered]@{
+            ok = $true; candidates = @($found); linked = [bool]$current; dataRoot = $script:DataRoot
         })
         return
     }
@@ -381,12 +537,14 @@ function Invoke-ApiRoute {
             $reset   = [bool](Get-Prop $req 'reset')
             $target  = [string](Get-Prop $req 'dataRoot')
             $copy    = [bool](Get-Prop $req 'copyExisting')
+            $localOnly = [bool](Get-Prop $req 'localOnly')
             $oldRec  = $script:RecDir
             $oldProj = $script:ProjDir
             $oldWasDefault = Test-IsDefaultRoot $script:DataRoot
+            $script:MissingRoot = ''   # a new choice replaces the one that went missing
             if ($reset -or [string]::IsNullOrWhiteSpace($target)) {
                 Set-DataRoot $DefaultDataRoot
-                Save-ConfigDataRoot ''
+                Save-Config '' $localOnly
                 Write-Log "data folder reset to default: $script:DataRoot" 'Cyan'
             } else {
                 $target = $target.Trim().Trim('"')
@@ -398,7 +556,7 @@ function Invoke-ApiRoute {
                     Send-Error $Stream 400 'Bad Request' 'That folder does not exist. Create it first (or sync the SharePoint folder), then try again.'; return
                 }
                 Set-DataRoot $target
-                Save-ConfigDataRoot $script:DataRoot
+                Save-Config $script:DataRoot $false
                 Write-Log "data folder changed to: $script:DataRoot" 'Cyan'
             }
 
@@ -639,10 +797,17 @@ function Start-Listener {
 $chosenRoot = $DefaultDataRoot
 $cfg = Read-Config
 $cfgRoot = [string](Get-Prop $cfg 'dataRoot')
+$script:LocalOnly = [bool](Get-Prop $cfg 'localOnly')
 if (-not [string]::IsNullOrWhiteSpace($DataRoot)) { $chosenRoot = $DataRoot }
 elseif (-not [string]::IsNullOrWhiteSpace($cfgRoot)) {
     if (Test-Path -LiteralPath $cfgRoot -PathType Container) { $chosenRoot = $cfgRoot }
-    else { Write-Log "configured data folder not found, using the default: $cfgRoot" 'DarkYellow' }
+    else {
+        # Reported to the browser so this session's fallback is not mistaken
+        # for "no folder chosen" - which would link the team folder and
+        # overwrite the person's saved choice.
+        $script:MissingRoot = $cfgRoot
+        Write-Log "configured data folder not found, using the default for now: $cfgRoot" 'DarkYellow'
+    }
 }
 Set-DataRoot $chosenRoot
 

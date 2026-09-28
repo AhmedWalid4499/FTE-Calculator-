@@ -577,13 +577,19 @@
 
     var row = kpiBand(ws, 5, headlineCells(record)) + 1;
 
-    row = addFactTable(ws, row, 'Project', [
+    var projectFacts = [
       ['Project name', record.projectName, ''],
       ['Project code', record.projectCode, 'Stable identifier - the same for every estimate of this project'],
       ['Record ID', record.id, 'Unique to this one calculation'],
       ['Calculated at', new Date(record.savedAt).toLocaleString(), ''],
+      ['Created by', personText(record.createdBy) || 'Not recorded', 'The person who ran this calculation'],
       ['Estimate type', record.type, isWan ? 'Wide-area network rollout' : 'Local-area network rollout']
-    ]);
+    ];
+    if (record.updatedBy) {
+      projectFacts.splice(5, 0, ['Last changed by', personText(record.updatedBy),
+        (record.updatedAt ? new Date(record.updatedAt).toLocaleString() + ' - ' : '') + 'notes or planned start only']);
+    }
+    row = addFactTable(ws, row, 'Project', projectFacts);
 
     var inputFacts = [
       ['Calculation mode', i.mode, i.mode === 'Standard' ? 'Rates taken from the published rate card' : 'Rates supplied per row'],
@@ -768,6 +774,13 @@
     rateCardSheet(wb, record);
     dpmSheet(wb, record);
     return wb;
+  }
+
+  /* "Ahmed Elbourgy <ahmed.elbourgy.ext@orange.com>" */
+  function personText(p) {
+    if (!p) return '';
+    if (p.name && p.email) return p.name + ' <' + p.email + '>';
+    return p.name || p.email || '';
   }
 
   function startMonthLabel(record) {
@@ -1024,15 +1037,16 @@
       /* ---- Projects ---- (an Excel table needs at least one data row) */
       if (plan.projects.length) {
         var monthCols = plan.labels.map(function (l) { return { name: l, numFmt: FMT.fte, align: 'right' }; });
-        var ps = newSheet(wb, 'Projects', [30, 18, 8, 10, 12, 12, 10, 12, 12, 10, 10, 36]
+        var ps = newSheet(wb, 'Projects', [30, 18, 22, 8, 10, 12, 12, 10, 12, 12, 10, 10, 36]
           .concat(plan.labels.map(function () { return 10; })));
-        titleBlock(ps, 12 + plan.labels.length, 'PROJECTS ON THE PLAN', span,
+        titleBlock(ps, 13 + plan.labels.length, 'PROJECTS ON THE PLAN', span,
           'Latest estimate of each project. Month columns are the FTE the project needs in that month.');
         var prow = addTable(ps, {
           row: 5, hint: 'PlanProjects', theme: 'TableStyleMedium2', totals: true,
           columns: [
             { name: 'Project', total: 'label', totalLabel: 'TOTAL' },
             { name: 'Code' },
+            { name: 'Created by' },
             { name: 'Type', align: 'center' },
             { name: 'Status', align: 'center' },
             { name: 'Start' },
@@ -1045,7 +1059,8 @@
             { name: 'DPMs' }
           ].concat(monthCols.map(function (c) { c.total = 'sum'; return c; })),
           rows: plan.projects.map(function (p) {
-            return [p.name, p.code, p.type, p.status,
+            var by = p.record && p.record.createdBy;
+            return [p.name, p.code, by ? (by.name || by.email || '-') : '-', p.type, p.status,
                     p.start ? P.monthLabel(p.start) : 'Not scheduled', p.end ? P.monthLabel(p.end) : '-',
                     p.months, p.distribution === 'bell' ? 'Bell' : 'Flat', round2(p.totalMd), p.fte, p.peakFte,
                     p.dpms.map(function (d) { return d.name || d.email; }).join(', ') || 'None assigned']
@@ -1109,8 +1124,8 @@
       var totalSites = records.reduce(function (t, r) { return t + (r.inputs.totalSites || 0); }, 0);
       var peakFte = records.reduce(function (m, r) { return Math.max(m, r.results.fte || 0); }, 0);
 
-      var ws = newSheet(wb, 'All estimates', [26, 18, 12, 12, 30, 12, 12, 14, 14, 12, 12, 14]);
-      titleBlock(ws, 12, 'FTE RECORDS', records.length + ' saved calculation(s)',
+      var ws = newSheet(wb, 'All estimates', [26, 18, 24, 12, 12, 30, 12, 12, 14, 14, 12, 12, 14]);
+      titleBlock(ws, 13, 'FTE RECORDS', records.length + ' saved calculation(s)',
         'Exported ' + new Date().toLocaleString() + '. Each row is one calculation, frozen at the moment it was run.');
 
       var row = kpiBand(ws, 5, [
@@ -1127,6 +1142,7 @@
         columns: [
           { name: 'Project name', width: 26, total: 'label', totalLabel: 'TOTAL' },
           { name: 'Project code', width: 18 },
+          { name: 'Created by', width: 24 },
           { name: 'Type', width: 10, align: 'center' },
           { name: 'Status', width: 12, align: 'center' },
           { name: 'Calculated at', width: 22 },
@@ -1140,7 +1156,9 @@
         ],
         rows: records.map(function (rec) {
           var i = rec.inputs || {}, r = rec.results || {};
-          return [rec.projectName, rec.projectCode, rec.type, rec.status || '-',
+          return [rec.projectName, rec.projectCode,
+                  rec.createdBy ? (rec.createdBy.name || rec.createdBy.email || '-') : '-',
+                  rec.type, rec.status || '-',
                   new Date(rec.savedAt).toLocaleString(), i.months, i.totalSites,
                   r.totalMd, r.mdPerMonth, r.fte, r.headcount, r.utilisationPct];
         })
@@ -1211,6 +1229,7 @@
       titleBlock(ws, 3, 'SAVED PROJECT CONFIGURATION', project.name,
         (project.projectCode ? project.projectCode + '   ·   ' : '') +
         'saved ' + (project.savedAt ? new Date(project.savedAt).toLocaleString() : '-') +
+        (project.savedBy ? ' by ' + personText(project.savedBy) : '') +
         '   ·   these are stored inputs, not a calculated result');
 
       var row = addFactTable(ws, 5, 'WAN side', [

@@ -660,6 +660,16 @@ details.fold { margin-top: var(--sp-3); font-size: .8rem; color: var(--text-3); 
 details.fold summary { cursor: pointer; font-weight: 600; color: var(--text-2); }
 details.fold p { margin-top: var(--sp-2); line-height: 1.7; }
 
+/* ======================================================= team folder === */
+
+.callout a, .steps-plain a, .card-note a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.callout a:hover, .steps-plain a:hover, .card-note a:hover { text-decoration: underline; }
+a.btn { text-decoration: none; }
+.steps-plain { margin: var(--sp-2) 0 var(--sp-3) var(--sp-5); font-size: .82rem; line-height: 1.7; color: var(--text-2); }
+.steps-plain li { margin-bottom: 4px; padding-left: 2px; }
+.by { color: var(--text-3); }
+.by b { color: var(--text-2); font-weight: 600; }
+
 /* ====================================================== site import === */
 
 .dlg.xwide { max-width: 920px; }

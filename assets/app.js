@@ -26,8 +26,12 @@
     dpmPicker: { side: 'wan', temp: [] },
     refStage: 'Design',
     plan: { team: null, last: null, loading: false, error: null },
-    pendingRoot: null     // data-folder path being typed in Settings, kept across re-renders
+    pendingRoot: null,    // data-folder path being typed in Settings, kept across re-renders
+    me: { name: '', email: '', source: '' },                  // who is using the app
+    teamFolder: { checked: false, candidates: [], linked: false, error: null }
   };
+
+  var TF = D.TEAM_FOLDER;
 
   var PAGE_TITLES = {
     dashboard: 'Dashboard', wan: 'WAN Estimator', lan: 'LAN Estimator',
@@ -94,10 +98,22 @@
     var st = DB.status();
     var dot = el('storage-dot'), text = el('storage-text'), chip = el('storage-chip');
 
-    if (st.mode === 'host') {
+    var tfState = teamFolderState();
+    if (tfState === 'verified') {
       dot.className = 'status-dot on';
-      text.textContent = 'Saving to data folder';
-      chip.title = 'Every calculation is written as a JSON file into: ' + (st.dataRoot || 'the data folder');
+      text.textContent = 'Saving to SharePoint';
+      chip.title = 'Every calculation is written into the team folder “' + TF.name + '” (' + st.dataRoot +
+        ') and OneDrive uploads it to SharePoint.';
+    } else if (tfState === 'named') {
+      dot.className = 'status-dot on';
+      text.textContent = 'Saving to ' + TF.name;
+      chip.title = 'Every calculation is written into a folder named “' + TF.name + '”' +
+        (st.mode === 'host' ? ' (' + st.dataRoot + ')' : '') + '. See Settings to check it is the shared SharePoint folder.';
+    } else if (st.mode === 'host') {
+      dot.className = 'status-dot on';
+      text.textContent = st.isDefaultRoot ? 'Saving on this PC only' : 'Saving to data folder';
+      chip.title = 'Every calculation is written as a JSON file into: ' + (st.dataRoot || 'the data folder') +
+        (st.isDefaultRoot ? '. Link the SharePoint team folder in Settings to share them with the team.' : '');
     } else if (st.mode === 'folder') {
       dot.className = 'status-dot on';
       text.textContent = 'Saving to ' + st.folderName;
@@ -1130,6 +1146,7 @@
       projectCode: ensureCode('wan'),
       projectName: val('w-proj-name') || 'Untitled WAN project',
       status: segValue('w-status'),
+      createdBy: meStamp(),
       notes: (val('w-notes') || '').trim(),
       /* The complete input set is frozen onto the record here. Exports and the
          records page read only from this, never from the live form. */
@@ -1183,6 +1200,7 @@
       projectCode: ensureCode('lan'),
       projectName: val('l-proj-name') || 'Untitled LAN project',
       status: segValue('l-status'),
+      createdBy: meStamp(),
       notes: (val('l-notes') || '').trim(),
       inputs: {
         months: input.months,
@@ -1268,6 +1286,8 @@
       var target = fresh || rec;
       if (notesChanged) target.notes = notes;
       if (startChanged) target.inputs.startMonth = start;
+      target.updatedBy = meStamp();
+      target.updatedAt = new Date().toISOString();
       return DB.updateRecord(target);
     }).then(function (res) {
       var saved = res.record;
@@ -1466,16 +1486,50 @@
 
   /* ============================================================= records = */
 
+  function creatorKey(r) {
+    var c = r && r.createdBy;
+    return c ? String(c.email || c.name || '').toLowerCase() : '';
+  }
+
+  /* "Created by" choices: Everyone, Me, then everyone who has an estimate. */
+  function renderOwnerFilter() {
+    var sel = el('rec-owner');
+    if (!sel) return;
+    var current = sel.value;
+    var people = {};
+    S.records.forEach(function (r) {
+      var k = creatorKey(r);
+      if (k && !people[k]) people[k] = personName(r.createdBy);
+    });
+    var meKey = String(S.me.email || '').toLowerCase();
+    var keys = Object.keys(people)
+      .filter(function (k) { return k !== meKey; })   // already offered as "Me"
+      .sort(function (a, b) { return people[a].localeCompare(people[b]); });
+    var html = '<option value="">Everyone</option>' +
+      (S.me.email ? '<option value="me">Me (' + esc(S.me.name || S.me.email) + ')</option>' : '') +
+      keys.map(function (k) { return '<option value="' + esc(k) + '">' + esc(people[k]) + '</option>'; }).join('') +
+      (S.records.some(function (r) { return !creatorKey(r); }) ? '<option value="none">Not recorded</option>' : '');
+    sel.innerHTML = html;
+    sel.value = current;
+    if (sel.value !== current) sel.value = '';
+  }
+
   function filteredRecords() {
     var q = (val('rec-search') || '').toLowerCase();
     var type = val('rec-type'), status = val('rec-status'), sort = val('rec-sort');
+    var owner = val('rec-owner');
+    var meKey = String(S.me.email || '').toLowerCase();
     var list = S.records.filter(function (r) {
       if (type && r.type !== type) return false;
       if (status && r.status !== status) return false;
+      if (owner === 'me' && (!meKey || creatorKey(r) !== meKey)) return false;
+      if (owner === 'none' && creatorKey(r)) return false;
+      if (owner && owner !== 'me' && owner !== 'none' && creatorKey(r) !== owner) return false;
       if (!q) return true;
       return (r.projectName || '').toLowerCase().indexOf(q) >= 0 ||
              (r.projectCode || '').toLowerCase().indexOf(q) >= 0 ||
-             (r.id || '').toLowerCase().indexOf(q) >= 0;
+             (r.id || '').toLowerCase().indexOf(q) >= 0 ||
+             personName(r.createdBy).toLowerCase().indexOf(q) >= 0;
     });
     var sorters = {
       newest: function (a, b) { return (b.savedAt || '').localeCompare(a.savedAt || ''); },
@@ -1488,6 +1542,7 @@
   }
 
   function renderRecords() {
+    renderOwnerFilter();
     var list = filteredRecords();
     el('records-count').textContent = list.length + ' of ' + S.records.length + ' shown';
     var host = el('records-list');
@@ -1514,6 +1569,7 @@
           '</div>' +
           '<div class="record-meta">' +
             '<span class="record-code">' + esc(r.projectCode) + '</span>' +
+            (r.createdBy ? '<span class="by">by <b>' + esc(isMe(r.createdBy) ? 'you' : personName(r.createdBy)) + '</b></span>' : '') +
             '<span>' + esc(fmt.dateTime(r.savedAt)) + '</span>' +
             '<span>' + fmt.int(r.inputs.totalSites) + ' sites · ' + esc(fmt.months(r.inputs.months)) + '</span>' +
             '<span>' + esc(r.inputs.mode) + ' mode</span>' +
@@ -1554,6 +1610,10 @@
         '<p class="mt-3"><b>Calculated</b> ' + esc(fmt.dateTime(rec.savedAt)) + ' · ' +
         esc(i.mode) + ' mode · capacity ' + i.capacityMdPerMonth + ' MD per month' +
         (PL.startMonthOf(rec) ? ' · planned start <b>' + esc(PL.monthLabel(PL.startMonthOf(rec))) + '</b>' : '') + '</p>' +
+        '<p class="by">Created by <b>' + esc(rec.createdBy ? personName(rec.createdBy) : 'not recorded') + '</b>' +
+          (rec.createdBy && rec.createdBy.email ? ' (' + esc(rec.createdBy.email) + ')' : '') +
+          (rec.updatedBy ? ' · last changed by <b>' + esc(personName(rec.updatedBy)) + '</b> ' + esc(fmt.dateTime(rec.updatedAt)) : '') +
+        '</p>' +
         distributionNoteHtml(r) +
         '<div class="result-grid mt-3">' +
           resultCell(isShaped(r) ? 'FTE (avg)' : 'FTE', fmt.fte(r.fte)) +
@@ -1699,6 +1759,7 @@
   function capSourceText() {
     var t = S.plan.team, st = DB.status();
     if (!t) return '';
+    if (t.source !== 'browser' && onTeamFolder()) return 'the SharePoint team folder “' + TF.name + '”';
     if (t.source === 'host') return 'the data folder ' + (t.location || st.dataRoot || '');
     if (t.source === 'folder') return 'the connected folder “' + (t.location || st.folderName || '') + '”';
     return 'this browser only';
@@ -1708,7 +1769,11 @@
     var t = S.plan.team, st = DB.status(), c = plan.counts;
     var shared = (t.source === 'host' && !st.isDefaultRoot) || t.source === 'folder';
     var parts = [];
-    parts.push('<b>' + c.projects + ' project(s)</b> from ' + c.estimates + ' estimate(s) in ' + esc(capSourceText()) + '.');
+    var creators = {};
+    plan.projects.forEach(function (p) { var k = creatorKey(p.record); if (k) creators[k] = true; });
+    var nCreators = Object.keys(creators).length;
+    parts.push('<b>' + c.projects + ' project(s)</b> from ' + c.estimates + ' estimate(s)' +
+      (nCreators > 1 ? ' by ' + nCreators + ' people' : '') + ' in ' + esc(capSourceText()) + '.');
     if (c.superseded) parts.push(c.superseded + ' older estimate(s) of the same projects are set aside — the latest one counts.');
     if (c.inactiveExcluded) parts.push(c.inactiveExcluded + ' inactive project(s) left out.');
     if (t.pendingIncluded) parts.push(t.pendingIncluded + ' of your estimate(s) not yet written to disk are included.');
@@ -1716,8 +1781,8 @@
 
     var html = '<div class="callout' + (shared ? '' : ' neutral') + '"><span class="callout-ic">' + (shared ? '👥' : '👤') + '</span><span>' +
       parts.join(' ') +
-      (shared ? '' : '<br>This plan only sees <b>your</b> estimates. To plan across the whole team, point everyone at one ' +
-        'shared (SharePoint / Teams) folder — <a href="#" data-goto="settings">set it up in Settings</a>.') +
+      (shared ? '' : '<br>This plan only sees <b>your</b> estimates. To plan across the whole team, link the SharePoint ' +
+        'team folder “' + esc(TF.name) + '” — <a href="#" data-goto="settings">see Settings</a>.') +
       '</span></div>';
     if (S.plan.error) {
       html += '<div class="callout warn"><span class="callout-ic">⚠</span><span>The data folder could not be read (' +
@@ -1914,7 +1979,9 @@
         var fromDates = !(p.record.inputs || {}).startMonth && p.start;
         return '<tr' + (muted ? ' class="row-muted"' : '') + '>' +
           '<td class="strong">' + esc(p.name) + (p.active ? '' : ' <span class="tag tag-muted">inactive</span>') +
-            '<span class="person-sub">' + esc(p.code) + '</span></td>' +
+            '<span class="person-sub">' + esc(p.code) +
+            (p.record.createdBy ? ' · by ' + esc(isMe(p.record.createdBy) ? 'you' : personName(p.record.createdBy)) : '') +
+            '</span></td>' +
           '<td><span class="tag ' + (p.type === 'WAN' ? 'tag-info' : 'tag-ok') + '">' + esc(p.type) + '</span></td>' +
           '<td><input type="month" class="cap-month" data-cap-id="' + esc(p.id) + '" value="' + esc(p.start || '') +
             '" aria-label="Start month for ' + esc(p.name) + '"' +
@@ -1950,6 +2017,8 @@
     DB.getFreshRecord(id).then(function (fresh) {
       var copy = fresh || JSON.parse(JSON.stringify(team.records[idx]));
       copy.inputs.startMonth = key;
+      copy.updatedBy = meStamp();
+      copy.updatedAt = new Date().toISOString();
       return DB.updateRecord(copy);
     }).then(function (res) {
       team.records[idx] = res.record;
@@ -2002,6 +2071,7 @@
       name: name,
       savedAt: new Date().toISOString(),
       appVersion: D.APP_VERSION,
+      savedBy: meStamp(),
       projectCode: S.wan.code || S.lan.code || null,
       wan: {
         projName: val('w-proj-name'), status: segValue('w-status'), pmRole: segValue('w-pm-role'),
@@ -2148,6 +2218,7 @@
           (w.status ? '<span class="tag tag-muted">' + esc(w.status) + '</span>' : '') + '</div>' +
           '<div class="record-meta">' +
             (p.projectCode ? '<span class="record-code">' + esc(p.projectCode) + '</span>' : '') +
+            (p.savedBy ? '<span class="by">by <b>' + esc(isMe(p.savedBy) ? 'you' : personName(p.savedBy)) + '</b></span>' : '') +
             '<span>' + esc(fmt.dateTime(p.savedAt)) + '</span>' +
             '<span>' + rowCount + ' allocation row(s)</span>' +
             (dpmCount ? '<span>' + dpmCount + ' DPM(s)</span>' : '') +
@@ -2266,6 +2337,265 @@
       }).join('') + '</tr></tfoot></table>';
   }
 
+  /* ============================================================ identity = */
+
+  function directoryName(email) {
+    var e = String(email || '').trim().toLowerCase();
+    if (!e) return '';
+    var d = D.DPMS.find(function (x) { return String(x.email).toLowerCase() === e; });
+    return d ? d.name : '';
+  }
+
+  /* Who is using the app: what they set in Settings, else the OneDrive work
+     account the launcher reports (named from the DPM Directory when listed). */
+  /* The OneDrive work account that owns the data folder when several are
+     signed in (it is the one whose files hold it), else the first. */
+  function pickAccount(accounts) {
+    var list = (accounts || []).filter(function (a) { return a && a.email; });
+    var root = String(DB.status().dataRoot || '').toLowerCase();
+    var owner = list.find(function (a) {
+      var f = String(a.folder || '').toLowerCase().replace(/[\\/]+$/, '');
+      return f && root.indexOf(f + '\\') === 0;
+    });
+    return owner || list[0] || null;
+  }
+
+  function resolveIdentity() {
+    var name = String(S.settings.userName || '').trim();
+    var email = String(S.settings.userEmail || '').trim();
+    /* Whatever was typed in Settings wins, field by field; the OneDrive
+       account fills in the rest - a name typed alone keeps the email. */
+    var need = !(name && email);
+    return (need ? DB.whoami() : Promise.resolve(null)).then(function (w) {
+      var acct = w ? pickAccount(w.accounts || (w.email ? [w] : [])) : null;
+      var em = email || (acct ? acct.email : '');
+      var nm = name || directoryName(em) || D.nameFromEmail(em);
+      S.me = (nm || em)
+        ? { name: nm, email: em, source: (name || email) ? 'settings' : 'onedrive', account: acct ? acct.email : '' }
+        : { name: '', email: '', source: '', account: '' };
+      DB.setIdentity(S.me.email);
+      return S.me;
+    });
+  }
+
+  /** The "created by" / "changed by" stamp, or null when nobody is known. */
+  function meStamp() {
+    return (S.me.name || S.me.email) ? { name: S.me.name, email: S.me.email } : null;
+  }
+
+  function isMe(p) {
+    return !!(p && p.email && S.me.email && String(p.email).toLowerCase() === String(S.me.email).toLowerCase());
+  }
+
+  function personName(p) { return p ? (p.name || p.email || '') : ''; }
+
+  /* Asked once, the first time someone calculates without the launcher
+     having recognised them. Skipping is allowed - estimates then simply show
+     no creator. */
+  function ensureIdentity() {
+    if (S.me.name || S.me.email || S.settings.identityAsked) return Promise.resolve();
+    S.settings.identityAsked = true;
+    DB.setSetting('identityAsked', true);
+    return askIdentity();
+  }
+
+  function askIdentity() {
+    var promise = U.dialog({
+      title: 'Who is creating this estimate?',
+      confirmLabel: 'Save',
+      cancelLabel: 'Skip',
+      submitOnEnter: true,
+      bodyHtml:
+        '<p>Your name is stamped on every estimate you create as <b>Created by</b>, so the team can see whose ' +
+        'estimate is whose in the shared SharePoint folder. You are only asked once; change it any time in Settings.</p>' +
+        '<label class="dlg-label mt-3" for="me-name">Your name</label>' +
+        '<input id="me-name" class="dlg-input" type="text" list="me-dpm-names" autocomplete="off" placeholder="Start typing — pick yourself from the DPM Directory">' +
+        '<datalist id="me-dpm-names">' + D.DPMS.map(function (d) { return '<option value="' + esc(d.name) + '">'; }).join('') + '</datalist>' +
+        '<label class="dlg-label mt-3" for="me-email">Your email</label>' +
+        '<input id="me-email" class="dlg-input" type="email" autocomplete="off" placeholder="name@orange.com">' +
+        '<p class="dlg-error" hidden></p>',
+      collect: function (root) {
+        var name = (qs('#me-name', root).value || '').trim();
+        var email = (qs('#me-email', root).value || '').trim();
+        var errBox = qs('.dlg-error', root);
+        if (!name && !email) { errBox.textContent = 'Enter your name, or choose Skip.'; errBox.hidden = false; return false; }
+        if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+          errBox.textContent = 'That does not look like an email address.'; errBox.hidden = false; return false;
+        }
+        return { name: name, email: email };
+      }
+    });
+    var nameEl = el('me-name');
+    if (nameEl) {
+      nameEl.focus();
+      nameEl.addEventListener('input', function () {
+        var d = D.DPMS.find(function (x) { return x.name === nameEl.value; });
+        if (d && el('me-email')) el('me-email').value = d.email;
+      });
+    }
+    return promise.then(function (res) {
+      if (!res || res === true) return;
+      return saveIdentity(res.name, res.email);
+    });
+  }
+
+  function saveIdentity(name, email) {
+    S.pendingMe = null;
+    S.settings.userName = name;
+    S.settings.userEmail = email;
+    return Promise.all([DB.setSetting('userName', name), DB.setSetting('userEmail', email)])
+      .then(resolveIdentity)
+      .then(function () { renderIdentity(); renderRecords(); });
+  }
+
+  function renderIdentity() {
+    if (!el('set-user-name')) return;
+    el('set-user-dpms').innerHTML = D.DPMS.map(function (d) { return '<option value="' + esc(d.name) + '">'; }).join('');
+    /* Unsaved typing survives any re-render; otherwise show what is saved. */
+    var pending = S.pendingMe;
+    setVal('set-user-name', pending ? pending.name : (S.settings.userName || ''));
+    setVal('set-user-email', pending ? pending.email : (S.settings.userEmail || ''));
+    el('set-user-name').placeholder = S.me.name || 'Your name';
+    el('set-user-email').placeholder = S.me.email || 'name@orange.com';
+    var who = '<b>' + esc(S.me.name || S.me.email) + '</b>' + (S.me.email && S.me.name ? ' (' + esc(S.me.email) + ')' : '');
+    el('set-user-note').innerHTML = !(S.me.name || S.me.email)
+      ? 'Not set yet — your estimates will show no creator until you add your name.'
+      : (S.me.source === 'onedrive'
+          ? '✓ Recognised from your OneDrive work account: ' + who + '. Leave these blank to keep using it.'
+          : 'Estimates you create are stamped <b>Created by</b> ' + who +
+            (S.me.account && !S.settings.userEmail ? ' — the email comes from your OneDrive work account.' : '.'));
+  }
+
+  function saveIdentityFromSettings() {
+    var name = (val('set-user-name') || '').trim();
+    var email = (val('set-user-email') || '').trim();
+    U.clearFieldErrors();
+    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      U.showFieldError('set-user-email', 'That does not look like an email address.');
+      return;
+    }
+    saveIdentity(name, email).then(function () {
+      U.toast(S.me.name || S.me.email ? 'Estimates will be stamped “Created by ' + (S.me.name || S.me.email) + '”.' : 'Name cleared.', 'ok');
+    });
+  }
+
+  /* ========================================================= team folder = */
+
+  function samePath(a, b) {
+    function n(p) { return String(p || '').replace(/[\\/]+$/, '').toLowerCase(); }
+    return !!a && !!b && n(a) === n(b);
+  }
+
+  /* Is the current data location the SharePoint team folder? Worked out
+     from where the app saves right now - never from a remembered flag, which
+     would go stale the moment the folder is changed.
+       'verified' - OneDrive lists this folder as the shared SharePoint one
+       'named'    - a folder with the right name that could not be verified
+                    (a private copy would look the same), or any folder named
+                    so in the browser, where it cannot be checked
+       ''         - not the team folder */
+  function teamFolderState() {
+    var st = DB.status();
+    var tf = TF.name.toLowerCase();
+    if (st.mode === 'host') {
+      var hit = (S.teamFolder.candidates || []).filter(function (c) { return samePath(c.path, st.dataRoot); })[0];
+      if (hit) return hit.how === 'sharepoint' ? 'verified' : 'named';
+      var leaf = String(st.dataRoot || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop().toLowerCase();
+      return (!st.isDefaultRoot && leaf === tf) ? 'named' : '';
+    }
+    if (st.mode === 'folder') return String(st.folderName || '').toLowerCase() === tf ? 'named' : '';
+    return '';
+  }
+
+  function onTeamFolder() { return !!teamFolderState(); }
+
+  function checkTeamFolder() {
+    if (DB.status().mode !== 'host') return Promise.resolve(S.teamFolder);
+    return DB.findTeamFolder(TF.name, D.teamFolderWebPath()).then(function (res) {
+      S.teamFolder = { checked: true, candidates: (res && res.candidates) || [], linked: !!(res && res.linked), error: null };
+      return S.teamFolder;
+    }).catch(function (err) {
+      S.teamFolder = { checked: true, candidates: [], linked: false, error: (err && err.message) || String(err) };
+      return S.teamFolder;
+    });
+  }
+
+  /* The synced copy OneDrive maps to the folder's SharePoint address - the
+     only kind linked without asking. */
+  function verifiedTeamCandidate() {
+    return (S.teamFolder.candidates || []).filter(function (x) { return x.how === 'sharepoint'; })[0] || null;
+  }
+
+  /* For the Settings card: the verified one, else a single same-named folder
+     (offered with a warning, never linked automatically). */
+  function bestTeamCandidate() {
+    var c = S.teamFolder.candidates || [];
+    return verifiedTeamCandidate() || (c.length === 1 ? c[0] : null);
+  }
+
+  /* On start with the launcher: link the synced team folder automatically -
+     only when OneDrive confirms it is the shared SharePoint folder, and only
+     when this person has not chosen otherwise: not after "Use my own folder
+     instead" (localOnly), not while another folder is in use, and not when a
+     folder they chose is merely missing this session (missingRoot). */
+  var autoLinking = null;
+  function autoLinkTeamFolder() {
+    if (DB.status().mode !== 'host') return Promise.resolve();
+    if (autoLinking) return autoLinking;   // focus events can arrive while a check is running
+    autoLinking = checkTeamFolder().then(function () {
+      var st = DB.status();
+      if (onTeamFolder() || !st.isDefaultRoot || st.localOnly || st.missingRoot) { renderStorageStatus(); return; }
+      var best = verifiedTeamCandidate();
+      if (!best) { renderStorageStatus(); return; }
+      return linkTeamFolder(best.path);
+    }).then(function () { autoLinking = null; }, function () { autoLinking = null; });
+    return autoLinking;
+  }
+
+  /* Switch to the team folder, then bring along this person's own estimates
+     and projects - chosen here in the browser by who created them, so a
+     colleague's estimate sitting in the old folder is never published. */
+  function linkTeamFolder(path) {
+    return DB.setHostDataRoot(path, false).then(function (out) {
+      S.pendingRoot = null;
+      return Promise.all([
+        DB.publishLocal(S.me.email).catch(function () { return 0; }),
+        DB.publishLocalProjects(S.me.email)
+      ]).then(function (n) {
+        return afterDataRootChange('Linked to the SharePoint team folder “' + TF.name + '”. Every estimate is now saved there and ' +
+          'uploaded by OneDrive' + (n[0] || n[1]
+            ? ' — ' + n[0] + ' of your earlier estimate(s) and ' + n[1] + ' project(s) copied in.' : '.'));
+      });
+    }).catch(function (err) {
+      renderStorageStatus();
+      U.toast('Could not link the team folder: ' + (err && err.message ? err.message : err), 'err');
+    });
+  }
+
+  function lookForTeamFolder() {
+    checkTeamFolder().then(function () {
+      var best = verifiedTeamCandidate();   // a merely same-named folder is offered in Settings, not linked
+      if (teamFolderState() === 'verified') { U.toast('Already linked to the team folder.', 'ok'); renderSettingsPage(); return; }
+      if (best) return linkTeamFolder(best.path);
+      renderSettingsPage();
+      U.toast(S.teamFolder.candidates.length
+        ? 'Found a folder named “' + TF.name + '”, but OneDrive does not list it as the shared SharePoint folder — see Settings.'
+        : '“' + TF.name + '” is not synced on this PC yet. Open it on SharePoint and choose “Add shortcut to My files”.', 'warn');
+    });
+  }
+
+  function teamFolderLink(label) {
+    return '<a href="' + esc(TF.url) + '" target="_blank" rel="noopener noreferrer">' + esc(label || ('Open “' + TF.name + '” on SharePoint')) + ' ↗</a>';
+  }
+
+  function teamFolderSteps(finalStep) {
+    return '<ol class="steps-plain">' +
+      '<li>' + teamFolderLink() + '. It opens for people ' + esc(TF.owner) + ' has shared the folder with (with edit rights).</li>' +
+      '<li>In SharePoint, choose <b>Add shortcut to My files</b> in the bar at the top. OneDrive then syncs the folder to this PC within a minute or so.</li>' +
+      '<li>' + finalStep + '</li>' +
+      '</ol>';
+  }
+
   /* ============================================================ settings = */
 
   function renderSettingsPage() {
@@ -2281,35 +2611,43 @@
     var actions = el('settings-storage-actions');
     var rows = [], buttons = [];
 
+    renderTeamFolderSettings();
+    renderIdentity();
+
     if (st.mode === 'host') {
+      var team = onTeamFolder();
       rows.push('<div class="callout"><span class="callout-ic">✓</span><span>' +
         '<b>Saving to disk through the local app host.</b> Every calculation is written as a JSON file into ' +
         '<span class="code">' + esc(st.dataRoot || 'data') + '</span>' +
-        (st.isDefaultRoot
-          ? ' — the app\'s own data folder, which only you use.'
-          : ' — a shared team folder: everyone pointed at it sees the same estimates and the same team plan.') +
+        (team
+          ? ' — the SharePoint team folder. OneDrive uploads each file to SharePoint automatically.'
+          : (st.isDefaultRoot
+              ? ' — the app\'s own data folder on this PC, which only you use.'
+              : ' — a folder you chose. Everyone pointed at it sees the same estimates and the same team plan.')) +
         '</span></div>');
       /* The path being typed survives the re-renders a status change causes. */
-      var rootValue = S.pendingRoot !== null ? S.pendingRoot : (st.isDefaultRoot ? '' : (st.dataRoot || ''));
-      rows.push('<div class="divider"><span>Shared team folder</span></div>' +
-        '<p class="card-note">To plan across the team, everyone points the app at <b>one folder</b> — a SharePoint or Teams ' +
-        'document library synced to each PC through OneDrive (in Teams: <i>Files › Sync</i>, or <i>Add shortcut to My files</i>). ' +
-        'Paste that folder\'s path below. Each person does this once on their own PC.</p>' +
+      var rootValue = S.pendingRoot !== null ? S.pendingRoot : ((st.isDefaultRoot || team) ? '' : (st.dataRoot || ''));
+      if (st.missingRoot) {
+        rows.push('<div class="callout warn"><span class="callout-ic">⚠</span><span>The folder you chose, ' +
+          '<span class="code">' + esc(st.missingRoot) + '</span>, was not available when the app started, so estimates go to ' +
+          'the app\'s own folder for now. Your choice is kept — restart the app once that folder is back.</span></div>');
+      }
+      rows.push('<details class="fold" id="set-other-folder"' + ((S.pendingRoot !== null || S.otherFolderOpen) ? ' open' : '') +
+        '><summary>Use a different folder</summary>' +
+        '<p class="card-note mt-2">Any folder works — for example a Teams channel library synced through OneDrive. ' +
+        'Paste the folder\'s path as it appears in File Explorer.</p>' +
         '<div class="field mb-0"><label for="set-data-root" data-help="sharedFolder">Folder path</label>' +
         '<input type="text" id="set-data-root" autocomplete="off" spellcheck="false" value="' + esc(rootValue) + '" ' +
-        'placeholder="e.g. C:\\Users\\you\\Orange\\DPM Team - Documents\\FTE Data"></div>');
-      buttons.push('<button class="btn btn-primary btn-sm" data-storage-act="use-root">Use this folder</button>');
-      if (!st.isDefaultRoot) {
-        buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>');
-        buttons.push('<button class="btn btn-ghost btn-sm" data-storage-act="reset-root">Back to my own data folder</button>');
-      }
+        'placeholder="e.g. C:\\Users\\you\\Orange\\DPM Team - Documents\\FTE Data"></div>' +
+        '<div class="btn-row mt-2"><button class="btn btn-outline btn-sm" data-storage-act="use-root">Use this folder</button>' +
+        (!st.isDefaultRoot && !team ? '<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>' +
+          '<button class="btn btn-ghost btn-sm" data-storage-act="reset-root">Back to my own data folder</button>' : '') +
+        '</div></details>');
     } else if (st.mode === 'folder') {
       rows.push('<div class="callout"><span class="callout-ic">✓</span><span>' +
         '<b>Saving to the folder “' + esc(st.folderName) + '”.</b> Every calculation is written there as a JSON file, ' +
         'into <span class="code">records/</span> and <span class="code">projects/</span> sub-folders. ' +
-        'Your browser may ask you to confirm this folder again after you close and reopen it.</span></div>' +
-        '<p class="card-note">To share with the team, connect a folder that is synced from SharePoint or Teams: everyone ' +
-        'who connects the same folder sees the same estimates and the same Team capacity plan.</p>');
+        'Your browser may ask you to confirm this folder again after you close and reopen it.</span></div>');
       buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="change">Change folder</button>');
       buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>');
       buttons.push('<button class="btn btn-ghost btn-sm" data-storage-act="forget">Stop saving to this folder</button>');
@@ -2359,6 +2697,97 @@
     });
   }
 
+  /* The "SharePoint team folder" card: linked, found-but-not-linked, or the
+     steps to get it synced - for whichever way the app was opened. */
+  function renderTeamFolderSettings() {
+    var host = el('settings-team');
+    if (!host) return;
+    var st = DB.status();
+    var html;
+    var openBtn = '<a class="btn btn-outline btn-sm" href="' + esc(TF.url) + '" target="_blank" rel="noopener noreferrer">Open on SharePoint ↗</a>';
+
+    var state = teamFolderState();
+    var linkedButtons = '<div class="btn-row">' + openBtn +
+      '<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>' +
+      (st.mode === 'host' ? '<button class="btn btn-ghost btn-sm" data-storage-act="reset-root">Use my own folder instead</button>' : '') +
+      '</div>';
+
+    if (state === 'verified') {
+      html = '<div class="callout"><span class="callout-ic">✓</span><span><b>Linked to “' + esc(TF.name) + '”.</b> ' +
+        'Every estimate is saved in the team folder (<span class="code">' + esc(st.dataRoot) + '</span>) and OneDrive ' +
+        'uploads it to SharePoint automatically, stamped with who created it. Everyone who has the folder ' +
+        'sees the same estimates and the same Team capacity plan.</span></div>' + linkedButtons;
+    } else if (state === 'named' && st.mode === 'host') {
+      html = '<div class="callout warn"><span class="callout-ic">⚠</span><span>Saving to a folder named “' + esc(TF.name) +
+        '” (<span class="code">' + esc(st.dataRoot) + '</span>), but OneDrive does not list it as the shared SharePoint folder. ' +
+        'If it is a private copy, the team will not see your estimates. To be sure, open the link below, choose ' +
+        '<b>Add shortcut to My files</b>, then press <b>Look again</b>.</span></div>' +
+        '<div class="btn-row"><button class="btn btn-primary btn-sm" data-storage-act="look-team">Look again</button>' +
+        linkedButtons.replace('<div class="btn-row">', '');
+    } else if (state === 'named') {
+      html = '<div class="callout"><span class="callout-ic">✓</span><span><b>Connected to “' + esc(TF.name) + '”.</b> ' +
+        'Every estimate is saved there. The browser cannot check which folder this is, so make sure it is the ' +
+        '<b>shortcut</b> to the shared SharePoint folder (added with <b>Add shortcut to My files</b>), not a copy — ' +
+        'then OneDrive uploads each estimate to SharePoint automatically.</span></div>' + linkedButtons;
+    } else if (st.mode === 'host') {
+      var best = bestTeamCandidate();
+      var cands = S.teamFolder.candidates || [];
+      if (best && best.how === 'sharepoint') {
+        html = '<div class="callout"><span class="callout-ic">📁</span><span><b>The team folder is synced on this PC</b> at ' +
+          '<span class="code">' + esc(best.path) + '</span>' + (best.records ? ' (' + best.records + ' estimate(s) in it)' : '') + '. ' +
+          (st.localOnly ? 'You chose your own folder earlier, so it was not linked automatically.'
+            : (st.missingRoot ? 'It was not linked automatically because the folder you chose is missing this session.'
+              : 'Link it and every estimate is saved there.')) +
+          '</span></div><div class="btn-row">' +
+          '<button class="btn btn-primary btn-sm" data-storage-act="link-team" data-path="' + esc(best.path) + '">Link the team folder</button>' +
+          openBtn + '</div>';
+      } else if (cands.length) {
+        html = '<div class="callout warn"><span class="callout-ic">⚠</span><span>' +
+          (cands.length > 1 ? 'Folders' : 'A folder') + ' named “' + esc(TF.name) + '” ' + (cands.length > 1 ? 'exist' : 'exists') +
+          ' on this PC, but OneDrive does not list ' + (cands.length > 1 ? 'any of them' : 'it') + ' as the shared SharePoint ' +
+          'folder — ' + (cands.length > 1 ? 'they' : 'it') + ' may be a private copy. The safest way is to add the shortcut:</span></div>' +
+          teamFolderSteps('Press <b>Look again</b> — the app links it by itself.') +
+          '<div class="btn-row"><button class="btn btn-primary btn-sm" data-storage-act="look-team">Look again</button>' + openBtn + '</div>' +
+          '<div class="summary-list mt-2">' + cands.map(function (c) {
+            return '<div><button class="btn btn-ghost btn-sm" data-storage-act="link-team" data-path="' + esc(c.path) + '">Link anyway</button> ' +
+              '<span class="code">' + esc(c.path) + '</span> · ' + c.records + ' estimate(s)</div>';
+          }).join('') + '</div>';
+      } else {
+        html = '<div class="callout warn"><span class="callout-ic">⚠</span><span><b>“' + esc(TF.name) + '” is not synced on this PC yet.</b> ' +
+          'Until it is, estimates are saved in the app\'s own folder on this PC only.</span></div>' +
+          teamFolderSteps('Come back and press <b>Look again</b> — or simply restart the app: it links the folder by itself.') +
+          '<div class="btn-row"><button class="btn btn-primary btn-sm" data-storage-act="look-team">Look again</button>' + openBtn + '</div>' +
+          (S.teamFolder.error ? '<p class="field-help mt-2">Last check failed: ' + esc(S.teamFolder.error) + '</p>' : '');
+      }
+    } else if (st.mode === 'folder') {
+      html = '<div class="callout warn"><span class="callout-ic">⚠</span><span>Connected to “' + esc(st.folderName) +
+        '”, not the team folder “' + esc(TF.name) + '”.</span></div>' +
+        teamFolderSteps('Press <b>Connect the team folder</b> and pick “' + esc(TF.name) + '” inside your OneDrive folder (“OneDrive - orange.com”).') +
+        '<div class="btn-row"><button class="btn btn-primary btn-sm" data-storage-act="change">Connect the team folder</button>' + openBtn + '</div>';
+    } else if (st.canReachHost) {
+      html = '<div class="callout warn"><span class="callout-ic">⚠</span><span>The local app host is not responding, so the team ' +
+        'folder cannot be reached right now. Estimates are kept in this browser and written there once it is back.</span></div>';
+    } else if (st.folderNeedsReconnect) {
+      var wasTeam = String(st.folderName || '').toLowerCase() === TF.name.toLowerCase();
+      html = '<div class="callout warn"><span class="callout-ic">⚠</span><span><b>“' + esc(st.folderName) + '” needs reconnecting.</b> ' +
+        'Browsers drop folder permission when the tab is closed; one click grants it again, and anything saved meanwhile is ' +
+        'written out straight away.</span></div><div class="btn-row">' +
+        '<button class="btn btn-primary btn-sm" data-storage-act="reconnect">Reconnect ' + (wasTeam ? 'the team folder' : 'folder') + '</button>' +
+        (wasTeam ? '' : '<button class="btn btn-outline btn-sm" data-storage-act="connect">Connect the team folder instead</button>') +
+        openBtn + '</div>';
+    } else if (st.folderSupported) {
+      html = '<div class="callout"><span class="callout-ic">📁</span><span>Save straight into the team\'s SharePoint folder, “' +
+        esc(TF.name) + '”. OneDrive uploads each estimate automatically.</span></div>' +
+        teamFolderSteps('Press <b>Connect the team folder</b> and pick “' + esc(TF.name) + '” inside your OneDrive folder (“OneDrive - orange.com”).') +
+        '<div class="btn-row"><button class="btn btn-primary btn-sm" data-storage-act="connect">Connect the team folder</button>' + openBtn + '</div>';
+    } else {
+      html = '<div class="callout warn"><span class="callout-ic">⚠</span><span>This browser cannot save into a folder. To save into the ' +
+        'team\'s SharePoint folder “' + esc(TF.name) + '”, open the app in Chrome or Edge, or start it with ' +
+        '<span class="code">Start FTE Calculator.cmd</span>.</span></div><div class="btn-row">' + openBtn + '</div>';
+    }
+    host.innerHTML = html;
+  }
+
   /* ------------------------------------------------ shared data folder --- */
 
   function useDataRoot() {
@@ -2382,19 +2811,18 @@
       collect: function (root) { return { copy: qs('#root-copy', root).checked }; }
     }).then(function (choice) {
       if (!choice || choice === true) return;
-      return DB.setHostDataRoot(path, choice.copy).then(function (out) {
+      return DB.setHostDataRoot(path, false).then(function (out) {
         S.pendingRoot = null;
-        /* The host copies the files from the private data folder. This
-           browser's own estimates that never reached that folder (or, when
-           leaving another shared folder, the ones that are genuinely this
-           person's) are published from here - never colleagues'. */
-        var extra = choice.copy ? DB.publishLocal().catch(function () { return 0; }) : Promise.resolve(0);
-        return extra.then(function (published) {
-          var copied = (out.copiedRecords || 0) + published;
+        /* Copied from here rather than by the host, so the choice is made by
+           who created each estimate: a colleague's estimate sitting in the
+           old folder is never published into the new one. */
+        var extra = choice.copy
+          ? Promise.all([DB.publishLocal(S.me.email).catch(function () { return 0; }), DB.publishLocalProjects(S.me.email)])
+          : Promise.resolve([0, 0]);
+        return extra.then(function (n) {
           var msg = 'Now saving to ' + out.dataRoot;
-          if (choice.copy) msg += ' — copied ' + copied + ' estimate(s) and ' + (out.copiedProjects || 0) + ' project(s)';
-          if (out.copyFailed) msg += '; ' + out.copyFailed + ' file(s) could not be copied (see the launcher window)';
-          return afterDataRootChange(msg + '.', out.copyFailed ? 'warn' : 'ok');
+          if (choice.copy) msg += ' — copied ' + n[0] + ' estimate(s) and ' + n[1] + ' project(s)';
+          return afterDataRootChange(msg + '.');
         });
       });
     }).catch(function (err) {
@@ -2404,13 +2832,19 @@
   }
 
   function resetDataRoot() {
-    U.confirm('Go back to your own data folder?',
-      'New calculations will be saved in the app\'s own data folder again. The shared folder is left exactly as it is, ' +
-      'and colleagues keep using it.', { confirmLabel: 'Switch back' }).then(function (yes) {
+    var leavingTeam = onTeamFolder();
+    U.confirm('Use your own data folder?',
+      'New calculations will be saved only in the app\'s own data folder on this PC' +
+      (leavingTeam ? ', not in SharePoint — the team will not see them' : '') + '. The shared folder is left exactly as it is, ' +
+      'and colleagues keep using it.' +
+      (leavingTeam ? ' The app will not link the team folder again by itself; use “Link the team folder” in Settings to go back.' : ''),
+      { confirmLabel: 'Use my own folder' }).then(function (yes) {
       if (!yes) return;
-      return DB.setHostDataRoot(null).then(function (out) {
+      /* localOnly: a deliberate choice, so the automatic team-folder link on
+         the next start must not undo it. */
+      return DB.setHostDataRoot(null, false, { localOnly: true }).then(function (out) {
         S.pendingRoot = null;
-        return afterDataRootChange('Back to ' + out.dataRoot + '.');
+        return afterDataRootChange('Now saving to ' + out.dataRoot + ' only.');
       });
     }).catch(function (err) {
       U.toast(err && err.message ? err.message : 'Could not switch back.', 'err');
@@ -2420,7 +2854,8 @@
   /* After the host changes folder: read what is there, push anything still
      waiting, and refresh every view that shows records or projects. */
   function afterDataRootChange(message, level) {
-    return DB.pullFromDisk()
+    return checkTeamFolder()
+      .then(function () { return DB.pullFromDisk(); })
       .then(function () { return DB.pullProjectsFromDisk(); })
       .then(function () { return DB.flushPending(); })
       .then(function () { return Promise.all([DB.listRecords(), DB.listProjects()]); })
@@ -2433,7 +2868,7 @@
   }
 
   function publishMine() {
-    DB.publishLocal().then(function (n) {
+    DB.publishLocal(S.me.email).then(function (n) {
       return DB.listRecords().then(function (rows) {
         S.records = rows; S.plan.team = null;
         renderRecords(); renderSettingsPage(); renderStorageStatus();
@@ -2447,7 +2882,9 @@
 
   /* ------------------------------------------------- folder connection --- */
 
-  function handleStorageAction(action) {
+  function handleStorageAction(action, button) {
+    if (action === 'link-team') { linkTeamFolder(button && button.dataset.path); return; }
+    if (action === 'look-team') { lookForTeamFolder(); return; }
     if (action === 'use-root') { useDataRoot(); return; }
     if (action === 'reset-root') { resetDataRoot(); return; }
     if (action === 'publish') { publishMine(); return; }
@@ -2476,7 +2913,14 @@
         var bits = [];
         if (res.flushed) bits.push(res.flushed + ' record(s) written out');
         if (res.pulled) bits.push(res.pulled + ' estimate(s) read from the folder');
-        U.toast('Connected to “' + res.name + '”' + (bits.length ? ' — ' + bits.join(', ') + '.' : '. New calculations will be saved there.'), 'ok');
+        var isTeam = String(res.name || '').toLowerCase() === TF.name.toLowerCase();
+        if (isTeam) {
+          U.toast('Connected to the SharePoint team folder “' + res.name + '”' + (bits.length ? ' — ' + bits.join(', ') : '') +
+                  '. OneDrive uploads every estimate automatically.', 'ok');
+        } else {
+          U.toast('Connected to “' + res.name + '”' + (bits.length ? ' — ' + bits.join(', ') : '') +
+                  '. Note: the team\'s SharePoint folder is “' + TF.name + '”.', 'warn');
+        }
       });
     }).catch(function (err) {
       /* Cancelling the picker is a normal outcome, not a failure worth shouting about. */
@@ -2839,7 +3283,7 @@
       }
 
       var storageAct = e.target.closest('[data-storage-act]');
-      if (storageAct) { handleStorageAction(storageAct.dataset.storageAct); return; }
+      if (storageAct) { handleStorageAction(storageAct.dataset.storageAct, storageAct); return; }
     });
 
     el('theme-toggle').addEventListener('click', function () {
@@ -2858,7 +3302,7 @@
         if (yes) { S.wan.rows = []; renderWanRows(); }
       });
     });
-    el('w-calculate').addEventListener('click', calculateWan);
+    el('w-calculate').addEventListener('click', function () { ensureIdentity().then(calculateWan); });
     el('w-export').addEventListener('click', function () {
       if (!S.wan.record) { U.toast('Run a WAN calculation first.', 'warn'); return; }
       syncActiveNotes('wan').then(function () { EX.exportRecord(S.wan.record); });
@@ -2884,7 +3328,7 @@
         if (yes) { S.lan.rows = []; renderLanRows(); }
       });
     });
-    el('l-calculate').addEventListener('click', calculateLan);
+    el('l-calculate').addEventListener('click', function () { ensureIdentity().then(calculateLan); });
     el('l-export').addEventListener('click', function () {
       if (!S.lan.record) { U.toast('Run a LAN calculation first.', 'warn'); return; }
       syncActiveNotes('lan').then(function () { EX.exportRecord(S.lan.record); });
@@ -2915,13 +3359,20 @@
       if (input) updateStartMonth(input.dataset.capId, input.value);
     });
 
-    /* Settings: remember a half-typed data folder path across re-renders. */
+    /* Settings: remember half-typed values across re-renders. */
     document.addEventListener('input', function (e) {
-      if (e.target && e.target.id === 'set-data-root') S.pendingRoot = e.target.value;
+      var id = e.target && e.target.id;
+      if (id === 'set-data-root') S.pendingRoot = e.target.value;
+      if (id === 'set-user-name' || id === 'set-user-email') {
+        S.pendingMe = { name: val('set-user-name'), email: val('set-user-email') };
+      }
     });
+    document.addEventListener('toggle', function (e) {
+      if (e.target && e.target.id === 'set-other-folder') S.otherFolderOpen = e.target.open;
+    }, true);
 
     /* Records */
-    ['rec-search', 'rec-type', 'rec-status', 'rec-sort'].forEach(function (id) {
+    ['rec-search', 'rec-owner', 'rec-type', 'rec-status', 'rec-sort'].forEach(function (id) {
       el(id).addEventListener('input', renderRecords);
     });
     el('rec-refresh').addEventListener('click', function () {
@@ -2993,6 +3444,12 @@
       saveSettings();
     });
     el('set-email-save').addEventListener('click', saveEmailSettings);
+    el('set-user-save').addEventListener('click', saveIdentityFromSettings);
+    el('set-user-name').addEventListener('input', function () {
+      var typed = this.value;
+      var d = D.DPMS.find(function (x) { return x.name === typed; });
+      if (d) setVal('set-user-email', d.email);
+    });
     el('set-email-reset').addEventListener('click', function () {
       setVal('set-email-to', D.DEFAULT_SETTINGS.emailTo);
       setVal('set-email-cc', D.DEFAULT_SETTINGS.emailCc);
@@ -3051,8 +3508,11 @@
         setVal('w-add-complexity', S.settings.defaultComplexity);
         setVal('l-add-complexity', S.settings.defaultComplexity);
         updateMigrationHelp();
-        return Promise.all([DB.listRecords(), DB.listProjects()]);
+        return resolveIdentity();
       })
+      /* With the launcher, link the synced SharePoint team folder by itself. */
+      .then(function () { return autoLinkTeamFolder(); })
+      .then(function () { return Promise.all([DB.listRecords(), DB.listProjects()]); })
       .then(function (res) {
         S.records = res[0];
         S.projects = res[1];
@@ -3073,7 +3533,14 @@
        after the page is already open lights the connection up without a reload. */
     global.addEventListener('focus', function () {
       DB.probeServer().then(function (online) {
-        if (online) DB.flushPending().then(function (n) { if (n) renderStorageStatus(); });
+        if (!online) return;
+        DB.flushPending().then(function (n) { if (n) renderStorageStatus(); });
+        /* The launcher was started after the page was opened. */
+        if (!S.teamFolder.checked) {
+          resolveIdentity().then(autoLinkTeamFolder).then(function () {
+            return DB.listRecords().then(function (rows) { S.records = rows; renderRecords(); renderDashboard(); });
+          });
+        }
       });
     });
   }

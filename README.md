@@ -7,8 +7,9 @@ number can be checked by hand.
 
 **▶ Use it here: <https://ahmedwalid4499.github.io/FTE-Calculator-/>**
 
-No installation, no account, no server. Everything runs in your browser and
-your data never leaves your machine.
+No installation, no account, no server. Everything runs in your browser; the
+team's estimates are shared through a SharePoint folder that OneDrive keeps in
+sync on each PC (see below).
 
 ---
 
@@ -22,7 +23,7 @@ a `.json` file. Which of those you get depends on how you opened it:
 |---|---|---|
 | The link above, in **Chrome or Edge** | yes | yes — into a folder you pick |
 | The link above, in **Firefox or Safari** | yes | via **Download full backup** |
-| **`Start FTE Calculator.cmd`** locally | yes | yes — into `data/` automatically |
+| **`Start FTE Calculator.cmd`** locally | yes | yes — into the SharePoint team folder once it is synced, until then `data/` |
 | `index.html` double-clicked | yes | no (browsers forbid it) |
 
 ### Saving to a folder (Chrome / Edge)
@@ -54,16 +55,18 @@ saved meanwhile is written out immediately. Nothing is lost in between.
 Clone or download the repo and double-click **`Start FTE Calculator.cmd`**.
 
 A console window opens and your browser goes to `http://127.0.0.1:8080`. Leave
-it open while you work — it is what writes calculations straight into `data/`
-with no folder prompt at all. Nothing needs installing; it uses PowerShell,
+it open while you work — it is what writes calculations to disk with no folder
+prompt at all: into the SharePoint team folder once OneDrive has synced it (see
+below), and into `data/` next to the app until then, or if you choose
+**Use my own folder instead**. Nothing needs installing; it uses PowerShell,
 which is already part of Windows.
 
 There are two different things the app stores, and they are not the same:
 
 | | What it holds | Where |
 |---|---|---|
-| **FTE Record** | A finished calculation — the inputs *and* the result, frozen | `data/records/` |
-| **Project** | Just the settings you typed, to pick up again later | `data/projects/` |
+| **FTE Record** | A finished calculation — the inputs *and* the result, frozen | `records/` in the data folder |
+| **Project** | Just the settings you typed, to pick up again later | `projects/` in the data folder |
 
 Every press of **Calculate** writes a new record, so the folder is a full
 history of how an estimate developed. The only fields ever changed on a saved
@@ -72,34 +75,53 @@ the calculation.
 
 ---
 
-## Sharing one data folder with the team
+## The SharePoint team folder
 
-On its own, each person's app only sees their own estimates. To plan across the
-whole team, everyone points the app at **one shared folder** — a SharePoint or
-Teams document library synced to each PC through OneDrive:
+Every estimate is saved into one SharePoint folder, **FTE - Website**, which
+OneDrive keeps in sync on each person's PC:
 
-1. In Teams, open the channel's **Files** tab and choose **Sync** (or *Add
-   shortcut to My files*). Create a folder in it, e.g. `FTE Data`.
-2. In the app, **Settings → Where your data is saved → Shared team folder**,
-   paste that folder's path (for example
-   `C:\Users\you\Orange\DPM Team - Documents\FTE Data`) and press
-   **Use this folder**. Tick *copy my existing estimates* to bring your own work
-   along — nothing already in the shared folder is overwritten.
-3. Each person does this once on their own PC. The choice is remembered in
-   `config.json` next to the app (per machine, git-ignored).
+<https://orange0-my.sharepoint.com/:f:/r/personal/ahmed_elbourgy_ext_orange_com/Documents/FTE%20-%20Website?d=w2cc15d09b7054e0f9191e741d90e0c3f&csf=1&web=1&e=aJtbL9>
 
-From then on every estimate anyone saves lands in the shared folder, and the
-Records and Team capacity pages read everyone's. **Back to my own data folder**
-switches back at any time; the shared folder is left untouched.
+The link only opens for people the folder has been shared with.
 
-On the published GitHub Pages site the same works by connecting the synced
-folder with **Settings → Connect a folder** (Chrome or Edge).
+**Owner (once):** share the folder with the team with *Can edit* rights.
 
-Deleting a record, or **Delete all FTE records**, in a shared folder removes it
-for everyone — the confirmation says so.
+**Everyone else (once per PC):**
+
+1. Open the link above and choose **Add shortcut to My files** in the bar at the
+   top. OneDrive syncs the folder to your PC within a minute or so.
+2. Start the app with **`Start FTE Calculator.cmd`**. It finds the synced
+   folder by itself — OneDrive records every synced SharePoint location with
+   its web address, so the app checks it really is the shared folder, not just
+   a folder with the same name — and links it. Your own earlier estimates and
+   projects are copied in (never anyone else's); nothing already in the folder
+   is overwritten. A folder that only has the right name, such as a private
+   copy, is shown in Settings with a warning instead of being linked.
+
+From then on every estimate anyone calculates is written into the folder and
+OneDrive uploads it to SharePoint automatically. The Records and Team capacity
+pages read everyone's estimates.
+
+In the published web version (Chrome or Edge), use **Settings → SharePoint team
+folder → Connect the team folder** and pick `FTE - Website` inside your
+`OneDrive - orange.com` folder.
+
+**Settings → Use my own folder instead** stops saving to SharePoint on that PC
+(remembered in `config.json`, so the app does not re-link by itself);
+**Link the team folder** goes back. Deleting a record, or **Delete all FTE
+records**, while linked removes it for everyone — the confirmation says so.
+
+### Who created each estimate
+
+Every estimate is stamped **Created by** with the name and email of the person
+who calculated it. With the launcher this comes from the OneDrive work account
+signed in on the PC (named from the DPM Directory); in the web version the app
+asks once, and it can be changed under **Settings → You**. Changes made later
+to an estimate's notes or planned start record who made them. Records can be
+filtered by creator, and the name appears in the Excel exports and on the Team
+capacity page.
 
 ---
-
 ## Team capacity
 
 The **Team capacity** page adds every active estimate onto one calendar:
@@ -251,9 +273,11 @@ library update.
 
 ## Privacy
 
-Nothing is uploaded anywhere. There is no analytics, no tracking and no backend
-— GitHub Pages serves static files and never sees your data. Your estimates
-live in your own browser and in whatever folder you chose.
+The app itself sends your data nowhere. There is no analytics, no tracking and
+no backend — GitHub Pages serves static files and never sees your data. Your
+estimates are files in your browser and in the folder you save to; when that is
+the SharePoint team folder, OneDrive syncs them to Orange's SharePoint like any
+other file, visible only to the people the folder is shared with.
 
 ---
 
@@ -271,7 +295,12 @@ use **Download full backup** to keep a copy.
 Ports 8080–8090 are tried in order. If all are taken, run
 `server\serve.ps1 -Port 9000` from PowerShell.
 
-**"That folder does not exist" when choosing a shared folder.**
+**The team folder is not linked.**
+Open **Settings → SharePoint team folder**. If it says the folder is not synced,
+add the shortcut (step 1 above), wait for OneDrive to finish, and press **Look
+again**. If you chose your own folder earlier, press **Link the team folder**.
+
+**"That folder does not exist" when choosing a different folder.**
 The path must be the local, synced copy (under `C:\Users\…`), not a SharePoint
 web address. Sync the library first, then copy the path from File Explorer's
 address bar.
