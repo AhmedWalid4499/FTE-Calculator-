@@ -339,10 +339,28 @@
     return chart;
   }
 
+  /* For charts that are more than one bar series (the team plan's stacked
+     demand with a capacity line). `build` returns a full Chart.js config and
+     is called again on a theme switch, because colours are baked into the
+     datasets and patching them one by one is more fragile than rebuilding. */
+  function customChart(canvasId, build) {
+    if (typeof Chart === 'undefined') return null;
+    var canvas = el(canvasId);
+    if (!canvas) return null;
+    destroyChart(canvasId);
+    var cfg = build();
+    if (!cfg) return null;
+    var chart = new Chart(canvas.getContext('2d'), cfg);
+    chart.$fteBuild = build;
+    _charts[canvasId] = chart;
+    return chart;
+  }
+
   function redrawAllCharts() {
     Object.keys(_charts).forEach(function (id) {
       var c = _charts[id];
       if (!c) return;
+      if (c.$fteBuild) { customChart(id, c.$fteBuild); return; }
       var style = c.$fteStyle || { yLabel: '', offset: 0, uniform: false };
       c.options = chartOptions(style.yLabel);
       c.data.datasets.forEach(function (ds) {
@@ -405,7 +423,7 @@
     hint: hint, label: label, infoOnlyBadge: infoOnlyBadge,
     toast: toast, dialog: dialog, confirm: confirmDialog, prompt: promptDialog,
     makeSortable: makeSortable, emptyRow: emptyRow,
-    colour: colour, chartOptions: chartOptions, barChart: barChart,
+    colour: colour, chartOptions: chartOptions, barChart: barChart, customChart: customChart,
     destroyChart: destroyChart, redrawAllCharts: redrawAllCharts, isDark: isDark,
     applyTheme: applyTheme,
     clearFieldErrors: clearFieldErrors, showFieldError: showFieldError, reportErrors: reportErrors

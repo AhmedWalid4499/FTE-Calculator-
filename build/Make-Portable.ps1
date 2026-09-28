@@ -68,6 +68,8 @@ $scripts = @(
     'assets\db.js',
     'assets\ui.js',
     'assets\export.js',
+    'assets\import.js',
+    'assets\planner.js',
     'assets\app.js'
 )
 

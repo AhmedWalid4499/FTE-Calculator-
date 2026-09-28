@@ -5,7 +5,7 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '2.0.0';
+  var APP_VERSION = '2.1.0';
 
   /* --------------------------------------------------------------- WAN --- */
 
@@ -178,7 +178,8 @@
     dateDaysPerMonth: 30.44,  // average calendar month, used to convert a date range to months
     emailTo: '',              // default recipient for the result email (blank = fill in Outlook)
     emailCc: 'karim.elzarka.ext@orange.com',
-    emailSubject: 'DPM FTE Estimate - {project}'   // {project} is replaced with the project name
+    emailSubject: 'DPM FTE Estimate - {project}',  // {project} is replaced with the project name
+    teamCapacityFte: null     // DPMs available for the team plan (null = size of the DPM Directory)
   };
 
   /* ------------------------------------------- explanatory copy (help) --- */
@@ -188,7 +189,11 @@
   var HELP = {
     projectName:  'Free text label for this estimate. Appears on the dashboard, in the records list and at the top of every export.',
     projectCode:  'Automatically generated identifier, e.g. DPM-QWER-8F2A. It is created once and never changes, so every calculation and export for this project can be traced back to it.',
-    status:       'Active or Inactive. Recorded for reporting and filtering only - it does not change the calculated effort.',
+    status:       'Active or Inactive. It never changes the calculated effort, but it decides whether the project counts on the Team capacity plan: inactive projects are left out unless you choose to include them.',
+    startMonth:   'The month the project starts. It does not change the FTE - it places the project on the Team capacity plan, so its month-by-month effort lands in the right calendar months. With a start/end date, the start date is used instead.',
+    importSites:  'Build the allocation rows from a spreadsheet instead of typing them. Upload an .xlsx or .csv with one row per site (or per group of sites with a count). WAN needs a product and a connectivity mode per row; LAN needs a device count or a tier. You map the columns and see a preview before anything changes. Download the template for the expected layout.',
+    teamCapacity: 'How many full-time DPMs are available for these projects. Monthly demand above this line means the team is overbooked that month. Leave it blank to use the number of people in the DPM Directory.',
+    sharedFolder: 'Point everyone at the same folder - a SharePoint or Teams document library synced to each PC through OneDrive - and every estimate saved by anyone lands in one place. The Team capacity page then plans across the whole team, not just your own estimates. Each person sets this once on their own PC.',
     pmRole:       'Records whether the DPM is also acting as Project Manager. Recorded only - it does not change the calculated effort.',
     duration:     'How long the project runs, in months. Total effort is spread evenly across this period, so a longer duration lowers the FTE requirement for the same amount of work.',
     durationDates:'Choose a start and end date and the duration is derived from it, using an average month of 30.44 days. Fractional months are kept - they are not rounded away.',
@@ -217,7 +222,7 @@
     utilisation:  'FTE divided by headcount. Low utilisation means the last person is only partly loaded and may have spare capacity for other work.',
     peakFte:      'The FTE needed in the busiest month, rather than the average. This is the realistic staffing level - you have to cover the peak, not the average. Only shown when the bell-curve distribution is used.',
     peakHeadcount:'The busiest month\'s FTE rounded up to whole people. The maximum team size the bell curve demands at its mid-project peak.',
-    dpmAssign:    'Who is assigned to the project. Recorded on the estimate and included in exports - it does not change the calculated effort.'
+    dpmAssign:    'Who is assigned to the project. Recorded on the estimate and included in exports - it does not change the calculated effort. On the Team capacity page the project\'s monthly demand is shared equally between the people assigned, which is how overbooked DPMs are spotted.'
   };
 
   /* Terms that appear in the interface and in exports. */

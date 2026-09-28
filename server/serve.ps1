@@ -10,37 +10,44 @@
       address never does. This script therefore needs no elevation and
       installs nothing.
 
+    Data folder:
+      Defaults to .\data next to the app. Point it at a SharePoint / Teams
+      folder synced through OneDrive and the whole team reads and writes the
+      same estimates - that is what the Team capacity plan is built on. Set it
+      from Settings in the app (stored in config.json next to the app) or with
+      -DataRoot. Each record is its own file, so two people saving at the same
+      time never overwrite each other.
+
     Security posture:
       * Binds to 127.0.0.1 only - never reachable from the network.
-      * Static reads are confined to the application folder.
-      * Writes are confined to .\data.
-      * Any path containing traversal segments is rejected.
+      * Every request must carry a Host header naming this server, which
+        defeats DNS-rebinding attacks from other websites.
+      * Every state-changing request must come from this app's own origin, so
+        a website you happen to visit cannot write records, change the data
+        folder or open Outlook drafts through this server.
+      * Static reads are confined to the application folder; writes are
+        confined to the configured data folder; traversal is rejected.
 #>
 
 [CmdletBinding()]
 param(
-    [int]    $Port     = 0,       # 0 = probe PortStart..PortEnd for a free port
+    [int]    $Port      = 0,      # 0 = probe PortStart..PortEnd for a free port
     [int]    $PortStart = 8080,
     [int]    $PortEnd   = 8090,
+    [string] $DataRoot  = '',     # overrides config.json; blank = config or default
     [switch] $NoBrowser
 )
 
 $ErrorActionPreference = 'Stop'
-# Version 2.0 deliberately, not Latest: it still catches uninitialised variables,
-# but does not throw when a JSON payload simply omits an optional property -
-# which lets `if (-not $rec.id)` behave as a plain presence check.
+# Version 2.0 catches uninitialised variables AND throws on a reference to a
+# property an object does not have. JSON payloads may legitimately omit
+# optional fields, so optional values are always read through Get-Prop.
 Set-StrictMode -Version 2.0
 
 # ---------------------------------------------------------------- paths ----
-$AppRoot  = Split-Path -Parent $PSScriptRoot
-$DataRoot = Join-Path $AppRoot 'data'
-$RecDir   = Join-Path $DataRoot 'records'
-$ProjDir  = Join-Path $DataRoot 'projects'
-$IndexFile= Join-Path $DataRoot 'index.json'
-
-foreach ($d in @($DataRoot, $RecDir, $ProjDir)) {
-    if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
-}
+$AppRoot         = Split-Path -Parent $PSScriptRoot
+$DefaultDataRoot = Join-Path $AppRoot 'data'
+$ConfigFile      = Join-Path $AppRoot 'config.json'
 
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 
@@ -69,6 +76,15 @@ function Write-Log {
 function Write-TextFile {
     param([string]$Path, [string]$Content)
     [System.IO.File]::WriteAllText($Path, $Content, $Utf8)
+}
+
+# Read an optional property without tripping strict mode.
+function Get-Prop {
+    param($Obj, [string]$Name)
+    if ($null -eq $Obj) { return $null }
+    $p = $Obj.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
 }
 
 # Reject anything that could escape the intended directory.
@@ -173,41 +189,159 @@ function Read-RequestBody {
     return $Utf8.GetString($buf, 0, $read)
 }
 
+# ---------------------------------------------------------- data folder ----
+
+# The data folder can change while the server runs (Settings -> shared
+# folder), so everything that touches it reads these script-scope values.
+$script:DataRoot = $null
+$script:RecDir   = $null
+$script:ProjDir  = $null
+$script:RecordCache = @{}   # full path -> @{ Stamp; Text; Ticks; Summary }
+$script:SkippedFiles = 0    # record files that could not be read on the last scan
+
+function Test-IsDefaultRoot {
+    param([string]$Root)
+    return ([System.IO.Path]::GetFullPath($Root) -eq [System.IO.Path]::GetFullPath($DefaultDataRoot))
+}
+
+function Set-DataRoot {
+    param([string]$Root)
+    $full = [System.IO.Path]::GetFullPath($Root)
+    foreach ($d in @($full, (Join-Path $full 'records'), (Join-Path $full 'projects'))) {
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+    $script:DataRoot = $full
+    $script:RecDir   = Join-Path $full 'records'
+    $script:ProjDir  = Join-Path $full 'projects'
+    $script:RecordCache = @{}
+    # index.json was a cache that earlier versions wrote into the app's own
+    # data folder. It is no longer used (the list is built live from the
+    # files). Only ever tidied there: a folder the user picks may hold an
+    # unrelated index.json that is not ours to delete.
+    if (Test-IsDefaultRoot $full) {
+        $legacy = Join-Path $full 'index.json'
+        if (Test-Path -LiteralPath $legacy) { Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Read-Config {
+    if (-not (Test-Path -LiteralPath $ConfigFile)) { return $null }
+    try { return (Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
+    catch { Write-Log "config.json is unreadable and was ignored" 'DarkYellow'; return $null }
+}
+
+function Save-ConfigDataRoot {
+    param([string]$Root)   # '' = default
+    if ([string]::IsNullOrWhiteSpace($Root)) {
+        if (Test-Path -LiteralPath $ConfigFile) { Remove-Item -LiteralPath $ConfigFile -Force }
+        return
+    }
+    Write-TextFile -Path $ConfigFile -Content (@{ dataRoot = $Root } | ConvertTo-Json)
+}
+
 # ------------------------------------------------------- record storage ----
 
-# index.json is a compact summary of every record so the UI can render the
-# list without opening dozens of files.
-function Update-RecordIndex {
-    $entries = @()
-    Get-ChildItem -Path $RecDir -Filter '*.json' -File -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | ForEach-Object {
-            try {
-                $r = Get-Content $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-                $entries += [ordered]@{
-                    id           = $r.id
-                    savedAt      = $r.savedAt
-                    type         = $r.type
-                    projectCode  = $r.projectCode
-                    projectName  = $r.projectName
-                    status       = $r.status
-                    totalMd      = $r.results.totalMd
-                    fte          = $r.results.fte
-                    headcount    = $r.results.headcount
-                    totalSites   = $r.inputs.totalSites
-                    months       = $r.inputs.months
-                    file         = "data/records/$($_.Name)"
+# The record list is built live from the files - there is no index file to go
+# stale or to conflict when a folder is shared. Each file is parsed once and
+# cached against its timestamp and size, so re-listing a folder of hundreds
+# of estimates only re-reads the ones that changed.
+function Update-RecordCache {
+    $seen = @{}
+    $skipped = 0
+    $files = @(Get-ChildItem -LiteralPath $script:RecDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+    foreach ($f in $files) {
+        $path  = $f.FullName
+        $stamp = "$($f.LastWriteTimeUtc.Ticks)-$($f.Length)"
+        $seen[$path] = $true
+        $entry = $script:RecordCache[$path]
+        if ($entry -and $entry.Stamp -eq $stamp) { continue }
+        try {
+            $raw = [System.IO.File]::ReadAllText($path, $Utf8).Trim()
+            $r   = $raw | ConvertFrom-Json
+            $id  = Get-Prop $r 'id'
+            if (-not $id) { throw 'no id' }
+            $res = Get-Prop $r 'results'
+            $inp = Get-Prop $r 'inputs'
+            $script:RecordCache[$path] = @{
+                Stamp   = $stamp
+                Ticks   = $f.LastWriteTimeUtc.Ticks
+                # The file text as a JSON string literal. PowerShell's parser
+                # accepts things the browser's JSON.parse rejects (a raw line
+                # break inside a string, for one), so a hand-edited file must
+                # not be spliced into the response as-is: one bad file would
+                # make the whole list unreadable. The browser parses each one
+                # separately and skips any it cannot read.
+                Text    = (ConvertTo-Json -InputObject $raw -Compress)
+                Summary = [ordered]@{
+                    id          = $id
+                    savedAt     = Get-Prop $r 'savedAt'
+                    type        = Get-Prop $r 'type'
+                    projectCode = Get-Prop $r 'projectCode'
+                    projectName = Get-Prop $r 'projectName'
+                    status      = Get-Prop $r 'status'
+                    totalMd     = Get-Prop $res 'totalMd'
+                    fte         = Get-Prop $res 'fte'
+                    headcount   = Get-Prop $res 'headcount'
+                    totalSites  = Get-Prop $inp 'totalSites'
+                    months      = Get-Prop $inp 'months'
+                    file        = "records/$($f.Name)"
                 }
-            } catch {
-                Write-Log "skipping unreadable record $($_.Name)" 'DarkYellow'
             }
+        } catch {
+            $script:RecordCache.Remove($path)
+            $skipped++
+            Write-Log "skipping unreadable record $($f.Name)" 'DarkYellow'
         }
-    $payload = [ordered]@{
-        generatedAt = (Get-Date).ToString('o')
-        count       = $entries.Count
-        records     = $entries
     }
-    Write-TextFile -Path $IndexFile -Content ($payload | ConvertTo-Json -Depth 12)
-    return $payload
+    foreach ($k in @($script:RecordCache.Keys)) {
+        if (-not $seen.ContainsKey($k)) { $script:RecordCache.Remove($k) }
+    }
+    $script:SkippedFiles = $skipped
+}
+
+# One entry per record id. OneDrive keeps both sides of an edit conflict as
+# "<id>-<PC name>.json", so the same id can sit in two files; the newest wins.
+function Get-UniqueRecordEntries {
+    Update-RecordCache
+    $byId = @{}
+    foreach ($e in $script:RecordCache.Values) {
+        $id  = [string]$e.Summary.id
+        $cur = $byId[$id]
+        if (-not $cur) { $byId[$id] = $e; continue }
+        $a = [string]$e.Summary.savedAt; $b = [string]$cur.Summary.savedAt
+        if (($a -gt $b) -or (($a -eq $b) -and ($e.Ticks -gt $cur.Ticks))) { $byId[$id] = $e }
+    }
+    return @($byId.Values)
+}
+
+function Get-RecordSummaries {
+    $list = @(Get-UniqueRecordEntries | ForEach-Object { $_.Summary })
+    return @($list | Sort-Object { [string]$_.savedAt } -Descending)
+}
+
+# ---------------------------------------------------------------- guard -----
+
+# Blocks the two ways another website could reach this server through the
+# user's own browser: DNS rebinding (wrong Host) and cross-site requests
+# (wrong Origin). Non-browser clients send no Origin and are unaffected.
+function Test-RequestAllowed {
+    param([string]$Method, [hashtable]$Headers)
+    $allowedHosts   = @("127.0.0.1:$script:Bound", "localhost:$script:Bound")
+    $allowedOrigins = @("http://127.0.0.1:$script:Bound", "http://localhost:$script:Bound")
+
+    $hostHeader = $Headers['host']
+    if (-not $hostHeader -or ($allowedHosts -notcontains $hostHeader.ToLowerInvariant())) {
+        return 'unexpected Host header'
+    }
+    if ($Method -ne 'GET' -and $Method -ne 'HEAD') {
+        $origin = $Headers['origin']
+        if ($origin -and ($allowedOrigins -notcontains $origin.ToLowerInvariant())) {
+            return 'cross-origin request refused'
+        }
+        $site = $Headers['sec-fetch-site']
+        if ($site -and $site -eq 'cross-site') { return 'cross-site request refused' }
+    }
+    return $null
 }
 
 # ------------------------------------------------------------ routing -----
@@ -223,13 +357,85 @@ function Invoke-ApiRoute {
     # --- health -----------------------------------------------------------
     if ($Path -eq '/api/health') {
         Send-Json -Stream $Stream -Object ([ordered]@{
-            ok       = $true
-            app      = 'DPM FTE Calculator'
-            version  = '2.0.0'
-            dataRoot = $DataRoot
-            time     = (Get-Date).ToString('o')
+            ok              = $true
+            app             = 'DPM FTE Calculator'
+            version         = '2.1.0'
+            dataRoot        = $script:DataRoot
+            defaultDataRoot = $DefaultDataRoot
+            isDefaultRoot   = (Test-IsDefaultRoot $script:DataRoot)
+            time            = (Get-Date).ToString('o')
         })
         return
+    }
+
+    # --- data folder configuration ----------------------------------------
+    if ($Path -eq '/api/config') {
+        if ($Method -eq 'GET') {
+            Send-Json -Stream $Stream -Object ([ordered]@{
+                ok = $true; dataRoot = $script:DataRoot; defaultDataRoot = $DefaultDataRoot
+            })
+            return
+        }
+        if ($Method -eq 'POST') {
+            $req     = $Body | ConvertFrom-Json
+            $reset   = [bool](Get-Prop $req 'reset')
+            $target  = [string](Get-Prop $req 'dataRoot')
+            $copy    = [bool](Get-Prop $req 'copyExisting')
+            $oldRec  = $script:RecDir
+            $oldProj = $script:ProjDir
+            $oldWasDefault = Test-IsDefaultRoot $script:DataRoot
+            if ($reset -or [string]::IsNullOrWhiteSpace($target)) {
+                Set-DataRoot $DefaultDataRoot
+                Save-ConfigDataRoot ''
+                Write-Log "data folder reset to default: $script:DataRoot" 'Cyan'
+            } else {
+                $target = $target.Trim().Trim('"')
+                if (-not [System.IO.Path]::IsPathRooted($target)) {
+                    Send-Error $Stream 400 'Bad Request' 'Use a full folder path, for example C:\Users\you\Orange\DPM Team - Documents\FTE Data.'; return
+                }
+                if ($target -match '[*?"<>|]') { Send-Error $Stream 400 'Bad Request' 'That path contains characters Windows does not allow in folder names.'; return }
+                if (-not (Test-Path -LiteralPath $target -PathType Container)) {
+                    Send-Error $Stream 400 'Bad Request' 'That folder does not exist. Create it first (or sync the SharePoint folder), then try again.'; return
+                }
+                Set-DataRoot $target
+                Save-ConfigDataRoot $script:DataRoot
+                Write-Log "data folder changed to: $script:DataRoot" 'Cyan'
+            }
+
+            # Optionally bring the estimates from the previous folder along, so
+            # someone joining a shared folder does not arrive empty-handed.
+            # Only from the app's own (private) folder: coming from another
+            # shared folder, most of its files are colleagues' and are not
+            # this person's to copy - the browser publishes their own instead.
+            # Existing files are never overwritten, and one file that cannot
+            # be copied (read-only library, offline placeholder) is counted
+            # rather than aborting the switch half-way.
+            $copiedRec = 0; $copiedProj = 0; $copyFailed = 0
+            if ($copy -and $oldWasDefault -and $oldRec -and ($oldRec -ne $script:RecDir)) {
+                foreach ($pair in @(@($oldRec, $script:RecDir, 'rec'), @($oldProj, $script:ProjDir, 'proj'))) {
+                    foreach ($src in @(Get-ChildItem -LiteralPath $pair[0] -Filter '*.json' -File -ErrorAction SilentlyContinue)) {
+                        $dest = Join-Path $pair[1] $src.Name
+                        if (Test-Path -LiteralPath $dest) { continue }
+                        try {
+                            Copy-Item -LiteralPath $src.FullName -Destination $dest -ErrorAction Stop
+                            if ($pair[2] -eq 'rec') { $copiedRec++ } else { $copiedProj++ }
+                        } catch {
+                            $copyFailed++
+                            Write-Log "could not copy $($src.Name): $($_.Exception.Message)" 'DarkYellow'
+                        }
+                    }
+                }
+                Write-Log "copied $copiedRec record(s) and $copiedProj project(s) into the new folder" 'Cyan'
+            }
+
+            Send-Json -Stream $Stream -Object ([ordered]@{
+                ok = $true; dataRoot = $script:DataRoot
+                isDefaultRoot = (Test-IsDefaultRoot $script:DataRoot)
+                copiedRecords = $copiedRec; copiedProjects = $copiedProj; copyFailed = $copyFailed
+                copySkipped = [bool]($copy -and -not $oldWasDefault)
+            })
+            return
+        }
     }
 
     # --- open an Outlook draft (never sends) ------------------------------
@@ -243,12 +449,13 @@ function Invoke-ApiRoute {
         try {
             $outlook = New-Object -ComObject Outlook.Application
             $mail = $outlook.CreateItem(0)   # olMailItem
-            if ($req.to) { $mail.To = [string]$req.to }
-            if ($req.cc) { $mail.CC = [string]$req.cc }
-            $mail.Subject  = [string]$req.subject
-            $mail.HTMLBody = [string]$req.htmlBody
+            $to = [string](Get-Prop $req 'to'); $cc = [string](Get-Prop $req 'cc')
+            if ($to) { $mail.To = $to }
+            if ($cc) { $mail.CC = $cc }
+            $mail.Subject  = [string](Get-Prop $req 'subject')
+            $mail.HTMLBody = [string](Get-Prop $req 'htmlBody')
             $mail.Display($false)            # review-and-send; do NOT auto-send
-            Write-Log "opened Outlook draft: $($req.subject)" 'Green'
+            Write-Log "opened Outlook draft: $($mail.Subject)" 'Green'
             Send-Json -Stream $Stream -Object @{ ok = $true }
         } catch {
             Write-Log "Outlook draft failed: $($_.Exception.Message)" 'DarkYellow'
@@ -257,27 +464,46 @@ function Invoke-ApiRoute {
         return
     }
 
+    # --- every record in full (team view / sync) --------------------------
+    # Matched before the single-record route, which would otherwise read
+    # "all" as a record id. Each record travels as its file text (a JSON
+    # string) for the browser to parse one by one - see Update-RecordCache.
+    if ($Path -eq '/api/records/all') {
+        if ($Method -ne 'GET') { Send-Error $Stream 405 'Method Not Allowed' 'GET only'; return }
+        $texts = @(Get-UniqueRecordEntries | ForEach-Object { $_.Text })
+        $json = '{"ok":true,"format":"text","count":' + $texts.Count + ',"skipped":' + $script:SkippedFiles +
+                ',"dataRoot":' + (ConvertTo-Json -InputObject $script:DataRoot -Compress) +
+                ',"records":[' + ($texts -join ',') + ']}'
+        Send-Json -Stream $Stream -Object $json
+        return
+    }
+
     # --- records collection ----------------------------------------------
     if ($Path -eq '/api/records') {
         switch ($Method) {
             'GET' {
-                if (-not (Test-Path $IndexFile)) { [void](Update-RecordIndex) }
-                $raw = Get-Content $IndexFile -Raw -Encoding UTF8
-                Send-Json -Stream $Stream -Object $raw
+                $list = @(Get-RecordSummaries)
+                Send-Json -Stream $Stream -Object ([ordered]@{
+                    ok = $true; generatedAt = (Get-Date).ToString('o'); count = $list.Count
+                    dataRoot = $script:DataRoot; records = $list
+                })
                 return
             }
             'POST' {
                 $rec = $Body | ConvertFrom-Json
-                if (-not $rec.id) { Send-Error $Stream 400 'Bad Request' 'record.id is required'; return }
-                $name = (ConvertTo-SafeFileName $rec.id) + '.json'
-                $dest = Join-Path $RecDir $name
-                if (-not (Test-WithinRoot $dest $RecDir)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
+                $id  = [string](Get-Prop $rec 'id')
+                if (-not $id) { Send-Error $Stream 400 'Bad Request' 'record.id is required'; return }
+                $name = (ConvertTo-SafeFileName $id) + '.json'
+                $dest = Join-Path $script:RecDir $name
+                if (-not (Test-WithinRoot $dest $script:RecDir)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
                 Write-TextFile -Path $dest -Content $Body
-                [void](Update-RecordIndex)
-                Write-Log "saved record $($rec.id)  ($($rec.type), $([math]::Round([double]$rec.results.totalMd,2)) MD)" 'Green'
-                Send-Json -Stream $Stream -Status 201 -StatusText 'Created' -Object @{
-                    ok = $true; id = $rec.id; file = "data/records/$name"
-                }
+                $md = Get-Prop (Get-Prop $rec 'results') 'totalMd'
+                Write-Log "saved record $id  ($(Get-Prop $rec 'type'), $md MD)" 'Green'
+                Send-Json -Stream $Stream -Status 201 -StatusText 'Created' -Object ([ordered]@{
+                    ok = $true; id = $id
+                    file = (Split-Path -Leaf $script:DataRoot) + "/records/$name"
+                    path = $dest
+                })
                 return
             }
         }
@@ -287,17 +513,23 @@ function Invoke-ApiRoute {
     if ($Path -match '^/api/records/(.+)$') {
         $id   = $Matches[1]
         $name = (ConvertTo-SafeFileName $id) + '.json'
-        $dest = Join-Path $RecDir $name
-        if (-not (Test-WithinRoot $dest $RecDir)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
+        $dest = Join-Path $script:RecDir $name
+        if (-not (Test-WithinRoot $dest $script:RecDir)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
         switch ($Method) {
             'GET' {
-                if (-not (Test-Path $dest)) { Send-Error $Stream 404 'Not Found' 'no such record'; return }
-                Send-Json -Stream $Stream -Object (Get-Content $dest -Raw -Encoding UTF8)
+                if (-not (Test-Path -LiteralPath $dest)) { Send-Error $Stream 404 'Not Found' 'no such record'; return }
+                Send-Json -Stream $Stream -Object ([System.IO.File]::ReadAllText($dest, $Utf8))
                 return
             }
             'DELETE' {
-                if (Test-Path $dest) { Remove-Item $dest -Force }
-                [void](Update-RecordIndex)
+                if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
+                # Conflict copies of the same estimate would otherwise bring it back.
+                Update-RecordCache
+                foreach ($k in @($script:RecordCache.Keys)) {
+                    if ([string]$script:RecordCache[$k].Summary.id -eq $id -and (Test-WithinRoot $k $script:RecDir)) {
+                        Remove-Item -LiteralPath $k -Force -ErrorAction SilentlyContinue
+                    }
+                }
                 Write-Log "deleted record $id" 'DarkYellow'
                 Send-Json -Stream $Stream -Object @{ ok = $true; id = $id }
                 return
@@ -310,22 +542,24 @@ function Invoke-ApiRoute {
         switch ($Method) {
             'GET' {
                 $items = @()
-                Get-ChildItem -Path $ProjDir -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object {
-                    try { $items += (Get-Content $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) }
-                    catch { Write-Log "skipping unreadable project $($_.Name)" 'DarkYellow' }
+                Get-ChildItem -LiteralPath $script:ProjDir -Filter '*.json' -File -ErrorAction SilentlyContinue | ForEach-Object {
+                    $fn = $_.Name
+                    try { $items += (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) }
+                    catch { Write-Log "skipping unreadable project $fn" 'DarkYellow' }
                 }
                 Send-Json -Stream $Stream -Object @{ ok = $true; count = $items.Count; projects = $items }
                 return
             }
             'POST' {
-                $proj = $Body | ConvertFrom-Json
-                if (-not $proj.name) { Send-Error $Stream 400 'Bad Request' 'project.name is required'; return }
-                $name = (ConvertTo-SafeFileName $proj.name) + '.json'
-                $dest = Join-Path $ProjDir $name
-                if (-not (Test-WithinRoot $dest $ProjDir)) { Send-Error $Stream 400 'Bad Request' 'invalid name'; return }
+                $proj  = $Body | ConvertFrom-Json
+                $pname = [string](Get-Prop $proj 'name')
+                if (-not $pname) { Send-Error $Stream 400 'Bad Request' 'project.name is required'; return }
+                $name = (ConvertTo-SafeFileName $pname) + '.json'
+                $dest = Join-Path $script:ProjDir $name
+                if (-not (Test-WithinRoot $dest $script:ProjDir)) { Send-Error $Stream 400 'Bad Request' 'invalid name'; return }
                 Write-TextFile -Path $dest -Content $Body
-                Write-Log "saved project '$($proj.name)'" 'Green'
-                Send-Json -Stream $Stream -Status 201 -StatusText 'Created' -Object @{ ok = $true; name = $proj.name }
+                Write-Log "saved project '$pname'" 'Green'
+                Send-Json -Stream $Stream -Status 201 -StatusText 'Created' -Object @{ ok = $true; name = $pname }
                 return
             }
         }
@@ -335,16 +569,16 @@ function Invoke-ApiRoute {
     if ($Path -match '^/api/projects/(.+)$') {
         $pname = $Matches[1]
         $name  = (ConvertTo-SafeFileName $pname) + '.json'
-        $dest  = Join-Path $ProjDir $name
-        if (-not (Test-WithinRoot $dest $ProjDir)) { Send-Error $Stream 400 'Bad Request' 'invalid name'; return }
+        $dest  = Join-Path $script:ProjDir $name
+        if (-not (Test-WithinRoot $dest $script:ProjDir)) { Send-Error $Stream 400 'Bad Request' 'invalid name'; return }
         switch ($Method) {
             'GET' {
-                if (-not (Test-Path $dest)) { Send-Error $Stream 404 'Not Found' 'no such project'; return }
-                Send-Json -Stream $Stream -Object (Get-Content $dest -Raw -Encoding UTF8)
+                if (-not (Test-Path -LiteralPath $dest)) { Send-Error $Stream 404 'Not Found' 'no such project'; return }
+                Send-Json -Stream $Stream -Object ([System.IO.File]::ReadAllText($dest, $Utf8))
                 return
             }
             'DELETE' {
-                if (Test-Path $dest) { Remove-Item $dest -Force }
+                if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
                 Write-Log "deleted project '$pname'" 'DarkYellow'
                 Send-Json -Stream $Stream -Object @{ ok = $true; name = $pname }
                 return
@@ -365,10 +599,15 @@ function Invoke-StaticRoute {
     $rel = $Path.TrimStart('/')
     if ([string]::IsNullOrWhiteSpace($rel)) { $rel = 'index.html' }
     if (-not (Test-SafeRelativePath $rel)) { Send-Error $Stream 400 'Bad Request' 'illegal path'; return }
+    # The app folder may contain config.json and the default data folder;
+    # neither is part of the web app, so neither is served as a static file.
+    if ($rel -ieq 'config.json' -or $rel -like 'data/*' -or $rel -like 'data\*') {
+        Send-Error $Stream 404 'Not Found' "not found: $rel"; return
+    }
 
     $full = Join-Path $AppRoot ($rel -replace '/', '\')
     if (-not (Test-WithinRoot $full $AppRoot)) { Send-Error $Stream 403 'Forbidden' 'outside application root'; return }
-    if (-not (Test-Path $full -PathType Leaf))  { Send-Error $Stream 404 'Not Found' "not found: $rel"; return }
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf))  { Send-Error $Stream 404 'Not Found' "not found: $rel"; return }
 
     $ext  = [System.IO.Path]::GetExtension($full).ToLowerInvariant()
     $mime = if ($MimeMap.ContainsKey($ext)) { $MimeMap[$ext] } else { 'application/octet-stream' }
@@ -394,12 +633,25 @@ function Start-Listener {
     throw "No free port in range $From-$To. Close whatever is using them, or pass -Port <n>."
 }
 
+# Resolve the data folder: -DataRoot, else config.json, else .\data. A
+# configured folder that has gone missing (e.g. OneDrive not signed in) falls
+# back to the default rather than refusing to start.
+$chosenRoot = $DefaultDataRoot
+$cfg = Read-Config
+$cfgRoot = [string](Get-Prop $cfg 'dataRoot')
+if (-not [string]::IsNullOrWhiteSpace($DataRoot)) { $chosenRoot = $DataRoot }
+elseif (-not [string]::IsNullOrWhiteSpace($cfgRoot)) {
+    if (Test-Path -LiteralPath $cfgRoot -PathType Container) { $chosenRoot = $cfgRoot }
+    else { Write-Log "configured data folder not found, using the default: $cfgRoot" 'DarkYellow' }
+}
+Set-DataRoot $chosenRoot
+
 $started  = Start-Listener -From $PortStart -To $PortEnd -Fixed $Port
 $listener = $started.Listener
-$bound    = $started.Port
-$url      = "http://127.0.0.1:$bound/"
+$script:Bound = $started.Port
+$url      = "http://127.0.0.1:$script:Bound/"
 
-[void](Update-RecordIndex)
+Update-RecordCache
 
 Write-Host ''
 Write-Host '  ================================================================' -ForegroundColor Cyan
@@ -407,9 +659,9 @@ Write-Host '   DPM FTE Calculator' -ForegroundColor White
 Write-Host '  ================================================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host "   Open in browser :  $url" -ForegroundColor Yellow
-Write-Host "   Data folder     :  $DataRoot" -ForegroundColor Gray
+Write-Host "   Data folder     :  $script:DataRoot" -ForegroundColor Gray
 Write-Host ''
-Write-Host '   Every calculation is written to data\records as a .json file.' -ForegroundColor DarkGray
+Write-Host '   Every calculation is written to the data folder as a .json file.' -ForegroundColor DarkGray
 Write-Host '   Leave this window open while you work. Press Ctrl+C to stop.' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host '  ----------------------------------------------------------------' -ForegroundColor DarkGray
@@ -453,6 +705,13 @@ try {
 
             $path = ($target -split '\?')[0]
             $path = [System.Uri]::UnescapeDataString($path)
+
+            $refusal = Test-RequestAllowed -Method $method -Headers $headers
+            if ($refusal) {
+                Write-Log "refused $method $path : $refusal" 'Red'
+                Send-Error $stream 403 'Forbidden' $refusal
+                continue
+            }
 
             try {
                 if ($path.StartsWith('/api')) {

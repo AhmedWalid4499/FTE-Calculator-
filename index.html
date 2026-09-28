@@ -25,6 +25,10 @@
       <button class="nav-item" data-page="lan"><span class="nav-ic">⬡</span><span>LAN Estimator</span></button>
 
       <div class="nav-sep"></div>
+      <div class="nav-section">Plan</div>
+      <button class="nav-item" data-page="capacity"><span class="nav-ic">▤</span><span>Team capacity</span></button>
+
+      <div class="nav-sep"></div>
       <div class="nav-section">Data</div>
       <button class="nav-item" data-page="records"><span class="nav-ic">🗄</span><span>FTE Records</span></button>
       <button class="nav-item" data-page="projects"><span class="nav-ic">⊞</span><span>Projects</span></button>
@@ -131,7 +135,7 @@
             <input type="text" id="w-proj-name" placeholder="e.g. Q3 WAN EMEA Rollout" autocomplete="off">
           </div>
           <div class="field">
-            <span class="field-label" data-help="status">Project status <span class="tag tag-muted">recorded only</span></span>
+            <span class="field-label" data-help="status">Project status <span class="tag tag-muted">team plan only</span></span>
             <div class="segmented" id="w-status" role="group" aria-label="Project status">
               <button type="button" data-val="Active" class="active">Active</button>
               <button type="button" data-val="Inactive">Inactive</button>
@@ -158,6 +162,11 @@
             <label for="w-months">Duration in months</label>
             <input type="number" id="w-months" placeholder="e.g. 6" min="0.1" step="0.1">
             <span class="field-help">Total effort is spread evenly across this period.</span>
+          </div>
+          <div class="field">
+            <label for="w-start-month" data-help="startMonth">Planned start <span class="tag tag-muted">for the team plan</span></label>
+            <input type="month" id="w-start-month" placeholder="YYYY-MM">
+            <span class="field-help">Places the project on the Team capacity calendar. Does not change the FTE.</span>
           </div>
         </div>
         <div class="grid g3 hidden" id="w-dur-dates">
@@ -224,14 +233,21 @@
 
       <div class="card">
         <div class="card-head">
-          <div class="card-title"><span class="dot v"></span>Assigned DPMs <span class="tag tag-muted">recorded only</span></div>
+          <div class="card-title"><span class="dot v"></span>Assigned DPMs <span class="tag tag-muted">used in the team plan</span></div>
           <button class="btn btn-outline btn-sm" id="w-assign-dpms">+ Assign DPMs</button>
         </div>
         <div id="w-dpm-list"></div>
       </div>
 
       <div class="card">
-        <div class="card-head"><div class="card-title"><span class="dot g"></span>Site allocation by product</div></div>
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Site allocation by product</div>
+          <div class="btn-row">
+            <span class="field-label" data-help="importSites">From a site list</span>
+            <button class="btn btn-outline btn-sm" id="w-import-btn">↑ Import from Excel</button>
+            <button class="btn btn-ghost btn-sm" id="w-import-template">↓ Template</button>
+          </div>
+        </div>
+        <input type="file" id="w-import-file" accept=".xlsx,.xlsm,.csv,.txt" class="hidden">
         <p class="card-note">
           Add one row per group of sites that share a product, connectivity mode and complexity.
           Effort for a row is <b>base rate × complexity × sites</b>, where the base rate is the
@@ -319,7 +335,7 @@
             <input type="text" id="l-proj-name" placeholder="e.g. Q3 LAN Cairo Rollout" autocomplete="off">
           </div>
           <div class="field">
-            <span class="field-label" data-help="status">Project status <span class="tag tag-muted">recorded only</span></span>
+            <span class="field-label" data-help="status">Project status <span class="tag tag-muted">team plan only</span></span>
             <div class="segmented" id="l-status" role="group" aria-label="Project status">
               <button type="button" data-val="Active" class="active">Active</button>
               <button type="button" data-val="Inactive">Inactive</button>
@@ -346,6 +362,11 @@
             <label for="l-months">Duration in months</label>
             <input type="number" id="l-months" placeholder="e.g. 6" min="0.1" step="0.1">
             <span class="field-help">Total effort is spread evenly across this period.</span>
+          </div>
+          <div class="field">
+            <label for="l-start-month" data-help="startMonth">Planned start <span class="tag tag-muted">for the team plan</span></label>
+            <input type="month" id="l-start-month" placeholder="YYYY-MM">
+            <span class="field-help">Places the project on the Team capacity calendar. Does not change the FTE.</span>
           </div>
         </div>
         <div class="grid g3 hidden" id="l-dur-dates">
@@ -423,14 +444,21 @@
 
       <div class="card">
         <div class="card-head">
-          <div class="card-title"><span class="dot v"></span>Assigned DPMs <span class="tag tag-muted">recorded only</span></div>
+          <div class="card-title"><span class="dot v"></span>Assigned DPMs <span class="tag tag-muted">used in the team plan</span></div>
           <button class="btn btn-outline btn-sm" id="l-assign-dpms">+ Assign DPMs</button>
         </div>
         <div id="l-dpm-list"></div>
       </div>
 
       <div class="card">
-        <div class="card-head"><div class="card-title"><span class="dot g"></span>Site allocation by tier</div></div>
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Site allocation by tier</div>
+          <div class="btn-row">
+            <span class="field-label" data-help="importSites">From a site list</span>
+            <button class="btn btn-outline btn-sm" id="l-import-btn">↑ Import from Excel</button>
+            <button class="btn btn-ghost btn-sm" id="l-import-template">↓ Template</button>
+          </div>
+        </div>
+        <input type="file" id="l-import-file" accept=".xlsx,.xlsm,.csv,.txt" class="hidden">
         <p class="card-note">
           Add one row per group of sites in the same size tier. Effort for a row is
           <b>base rate × complexity × sites</b>. Tiers are determined by how many devices a site has —
@@ -496,6 +524,86 @@
         <button class="btn btn-outline" id="l-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="l-email" data-help="emailResult">✉ Email result</button>
         <button class="btn btn-ghost" id="l-save-project">⊞ Save as project</button>
+      </div>
+    </section>
+
+    <!-- ═════════════════════════════════════════════ TEAM CAPACITY ══════ -->
+    <section class="page" id="page-capacity">
+      <div class="page-head">
+        <h2>Team capacity</h2>
+        <p>Every active estimate placed on the calendar from its planned start, added up month by month and compared with the size of the team — so overbooked months, and the people carrying too much, show up before they happen.</p>
+      </div>
+
+      <div id="cap-source"></div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Plan settings</div>
+          <div class="btn-row">
+            <button class="btn btn-outline btn-sm" id="cap-refresh">↻ Refresh</button>
+            <button class="btn btn-primary btn-sm" id="cap-export">↓ Export to Excel</button>
+          </div>
+        </div>
+        <div class="grid g4 mb-0">
+          <div class="field">
+            <label for="cap-start">Window starts</label>
+            <input type="month" id="cap-start">
+          </div>
+          <div class="field">
+            <label for="cap-horizon">Months shown</label>
+            <select id="cap-horizon">
+              <option value="6">6 months</option>
+              <option value="12" selected>12 months</option>
+              <option value="18">18 months</option>
+              <option value="24">24 months</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="cap-capacity" data-help="teamCapacity">Team capacity (FTE)</label>
+            <input type="number" id="cap-capacity" min="0" step="0.5" placeholder="">
+          </div>
+          <div class="field">
+            <span class="field-label">Inactive projects</span>
+            <div class="segmented" id="cap-inactive" role="group" aria-label="Inactive projects">
+              <button type="button" data-val="No" class="active">Leave out</button>
+              <button type="button" data-val="Yes">Include</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="kpi-row" id="cap-kpis"></div>
+      <div id="cap-alerts"></div>
+
+      <div class="chart-card mb-3">
+        <div class="chart-title"><span class="dot a"></span>Monthly demand vs. team capacity <span class="tag tag-muted">FTE</span></div>
+        <div class="chart-box tall"><canvas id="cap-chart"></canvas></div>
+        <div class="mt-3" id="cap-month-table"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>DPM load by month <span class="tag tag-muted">FTE per person</span></div></div>
+        <p class="card-note">
+          Each project's monthly demand is shared equally between the DPMs assigned to it.
+          Above <b>1.00</b> a person is booked for more than a full month of work.
+        </p>
+        <div class="legend mb-3">
+          <span><span class="heat-key heat-ok"></span> under 0.80</span>
+          <span><span class="heat-key heat-high"></span> 0.80 – 1.00</span>
+          <span><span class="heat-key heat-over"></span> over 1.00 — overbooked</span>
+        </div>
+        <div id="cap-people"></div>
+      </div>
+
+      <div class="card mb-0">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Projects on the plan</div>
+          <span id="cap-proj-count" class="tag tag-muted"></span>
+        </div>
+        <p class="card-note">
+          The latest estimate of each project is used — estimates with the same project name (and type) are the same project.
+          Change a <b>start month</b> here to move the project on the
+          calendar — it is saved back onto the estimate, so everyone sharing the data folder sees the same plan.
+        </p>
+        <div id="cap-projects"></div>
       </div>
     </section>
 
@@ -769,6 +877,8 @@
 <script src="assets/db.js"></script>
 <script src="assets/ui.js"></script>
 <script src="assets/export.js"></script>
+<script src="assets/import.js"></script>
+<script src="assets/planner.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

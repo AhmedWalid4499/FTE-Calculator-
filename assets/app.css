@@ -454,6 +454,7 @@ td.actions { width: 1%; white-space: nowrap; }
 .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-4) var(--sp-4) var(--sp-3); box-shadow: var(--shadow); }
 .chart-title { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--text-3); margin-bottom: var(--sp-3); display: flex; align-items: center; gap: 7px; }
 .chart-box { position: relative; height: 240px; }
+.chart-box.tall { height: 330px; }
 .chart-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); margin-bottom: var(--sp-3); }
 
 /* ============================================================ empties === */
@@ -625,6 +626,51 @@ td.actions { width: 1%; white-space: nowrap; }
 .gs-num { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: .68rem; display: inline-flex; align-items: center; justify-content: center; font-family: var(--mono); flex-shrink: 0; }
 .gs-body { font-size: .78rem; color: var(--text-3); line-height: 1.65; }
 
+/* ===================================================== team capacity === */
+
+/* Months run left to right, so the name column stays put while scrolling. */
+.heat-table th, .heat-table td { padding: 8px 8px; }
+.heat-table th.m, .heat-table td.m { text-align: center; min-width: 58px; }
+.heat-table td.m { font-family: var(--mono); font-size: .75rem; color: var(--text-2); }
+.heat-table th:first-child, .heat-table td:first-child {
+  position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 190px;
+}
+.heat-table th:first-child { z-index: 3; background: var(--th-bg); }
+.heat-table tbody tr:hover td:first-child { background: var(--row-hover); }
+.heat-table td.m.heat-ok { background: var(--ok-bg); color: var(--ok-text); }
+.heat-table td.m.heat-high { background: var(--warn-bg); color: var(--warn-text); font-weight: 600; }
+.heat-table td.m.heat-over { background: var(--err-bg); color: var(--err-text); font-weight: 700; }
+.heat-table td.m.zero { color: var(--text-4); }
+.heat-table tr.sum td { font-weight: 700; color: var(--text); background: var(--surface-2); }
+.heat-table tr.sum td:first-child { background: var(--surface-2); }
+.heat-key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border-strong); vertical-align: -2px; margin-right: 3px; }
+.heat-key.heat-ok { background: var(--ok-bg); border-color: var(--ok-border); }
+.heat-key.heat-high { background: var(--warn-bg); border-color: var(--warn-border); }
+.heat-key.heat-over { background: var(--err-bg); border-color: var(--err-border); }
+.person-sub { display: block; font-size: .7rem; color: var(--text-4); font-weight: 400; }
+
+.cap-month {
+  background: var(--input-bg); border: 1px solid var(--input-border); border-radius: var(--r-sm);
+  padding: 5px 8px; color: var(--text); font-family: var(--mono); font-size: .76rem; outline: none;
+}
+.cap-month:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, .13); }
+tr.row-muted td { color: var(--text-4); }
+
+details.fold { margin-top: var(--sp-3); font-size: .8rem; color: var(--text-3); }
+details.fold summary { cursor: pointer; font-weight: 600; color: var(--text-2); }
+details.fold p { margin-top: var(--sp-2); line-height: 1.7; }
+
+/* ====================================================== site import === */
+
+.dlg.xwide { max-width: 920px; }
+.map-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-2) var(--sp-3); }
+.map-grid select, .dlg select.dlg-input { padding: 7px 9px; font-size: .8rem; cursor: pointer; }
+.table-wrap.scroll-y { max-height: 260px; overflow-y: auto; }
+.import-summary { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-3) 0; }
+.import-skips { font-size: .76rem; color: var(--text-3); line-height: 1.7; max-height: 150px; overflow-y: auto; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--text-2); margin-top: var(--sp-2); cursor: pointer; }
+.check-row input { width: 15px; height: 15px; accent-color: var(--accent); }
+
 /* ========================================================= responsive === */
 
 @media (max-width: 1180px) {
@@ -646,6 +692,8 @@ td.actions { width: 1%; white-space: nowrap; }
   .topbar { padding: 0 var(--sp-4); }
   .grid.g5, .grid.g4, .grid.g3, .grid.g2 { grid-template-columns: 1fr; }
   .record-figures { display: none; }
+  .map-grid { grid-template-columns: 1fr; }
+  .heat-table th:first-child, .heat-table td:first-child { min-width: 130px; }
 }
 @media (max-width: 520px) {
   .kpi-row { grid-template-columns: 1fr; }

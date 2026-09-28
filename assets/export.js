@@ -607,6 +607,8 @@
                   : 'Man-days spread evenly across the duration']);
     row = addFactTable(ws, row, 'Inputs that affect the result', inputFacts);
 
+    var plannedStart = startMonthLabel(record);
+
     var resultFacts = [
       ['Total effort (MD)', r.totalMd, 'Sum of every allocation row' + (isWan && r.migrationMd ? ' plus the migration uplift' : '')],
       [isShaped(r) ? 'Average effort per month (MD)' : 'Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
@@ -628,11 +630,13 @@
     row = addFactTable(ws, row, 'Result', resultFacts, { theme: 'TableStyleLight11' });
 
     var recorded = isWan
-      ? [['Project status', record.status, 'Reporting only'],
+      ? [['Project status', record.status, 'Decides whether it counts on the team capacity plan'],
+         ['Planned start', plannedStart, 'Places the project on the team capacity plan'],
          ['Project type', i.projectType, 'Reporting only'],
          ['ABACOS', i.abacos, 'Reporting only'],
          ['DPM acting as PM', i.pmRole, 'Reporting only']]
-      : [['Project status', record.status, 'Reporting only'],
+      : [['Project status', record.status, 'Decides whether it counts on the team capacity plan'],
+         ['Planned start', plannedStart, 'Places the project on the team capacity plan'],
          ['FLAN used', i.flan, 'Reporting only'],
          ['Device count', i.devices, 'Only used when no tier rows were entered'],
          ['DPM acting as PM', i.pmRole, 'Reporting only']];
@@ -760,9 +764,326 @@
     }
 
     monthlyDistributionSheet(wb, record);
+    siteListSheet(wb, record);
     rateCardSheet(wb, record);
     dpmSheet(wb, record);
     return wb;
+  }
+
+  function startMonthLabel(record) {
+    var P = global.FTEPlanner;
+    var key = P ? P.startMonthOf(record) : null;
+    return key ? P.monthLabel(key) : 'Not set';
+  }
+
+  /* When the allocation came from an imported site list, the sites behind
+     each row are listed so the estimate can be checked site by site. */
+  function siteListSheet(wb, record) {
+    var i = record.inputs || {};
+    var isWan = record.type === 'WAN';
+    var lines = [];
+    (i.allocation || []).forEach(function (row, n) {
+      (row.sitesDetail || []).forEach(function (s) {
+        lines.push(isWan
+          ? [lines.length + 1, s.name, s.count, row.product, row.connectivityMode, row.complexityPct, n + 1]
+          : [lines.length + 1, s.name, s.count, (s.devices === undefined || s.devices === null) ? '' : s.devices,
+             row.tierLabel, row.complexityPct, n + 1]);
+      });
+    });
+    if (!lines.length) return;
+
+    var ws = newSheet(wb, 'Site list', isWan ? [7, 36, 10, 24, 26, 13, 13] : [7, 36, 10, 14, 26, 13, 13]);
+    titleBlock(ws, 7, 'SITE LIST', record.projectName,
+      'The sites behind each allocation row, as imported from the site list.   ' + record.projectCode);
+    var sum = lines.reduce(function (t, l) { return t + (Number(l[2]) || 0); }, 0);
+    var row = addTable(ws, {
+      row: 5, hint: 'SiteList', theme: 'TableStyleMedium2', totals: true,
+      columns: isWan ? [
+        { name: '#', align: 'center', total: 'label', totalLabel: 'TOTAL' },
+        { name: 'Site' },
+        { name: 'Sites', numFmt: FMT.int, align: 'right', total: 'sum' },
+        { name: 'Product' },
+        { name: 'Connectivity mode' },
+        { name: 'Complexity', numFmt: FMT.pct0, align: 'right' },
+        { name: 'Allocation row', numFmt: FMT.int, align: 'center' }
+      ] : [
+        { name: '#', align: 'center', total: 'label', totalLabel: 'TOTAL' },
+        { name: 'Site' },
+        { name: 'Sites', numFmt: FMT.int, align: 'right', total: 'sum' },
+        { name: 'Devices', numFmt: FMT.int, align: 'right' },
+        { name: 'Tier' },
+        { name: 'Complexity', numFmt: FMT.pct0, align: 'right' },
+        { name: 'Allocation row', numFmt: FMT.int, align: 'center' }
+      ],
+      rows: lines
+    });
+    if (sum !== Number(i.totalSites)) {
+      note(ws, row, 'The named sites add up to ' + sum + ' of the ' + i.totalSites +
+        ' in the estimate - the rest were added or changed by hand after the import.');
+    }
+  }
+
+  /* ------------------------------------------------------ import template -- */
+
+  /* A ready-made site list: the layout the importer recognises straight
+     away, drop-down lists of the exact rate-card names, and a few example
+     lines to overwrite. */
+  function downloadImportTemplate(side) {
+    if (!available()) { global.UI.toast('Excel library unavailable.', 'err'); return Promise.resolve(); }
+    try {
+      var isWan = side !== 'lan';
+      var wb = newBook();
+      var ws = wb.addWorksheet('Sites', { views: [{ state: 'frozen', ySplit: 1 }] });
+      var headers = isWan
+        ? ['Site', 'Product', 'Connectivity mode', 'Sites', 'Complexity %', 'Override MD per site']
+        : ['Site', 'Device count', 'Tier', 'Sites', 'Complexity %', 'Override MD per site'];
+      ws.columns = (isWan ? [34, 24, 28, 10, 14, 22] : [34, 16, 24, 10, 14, 22]).map(function (w) { return { width: w }; });
+      ws.addRow(headers);
+      var examples = isWan ? [
+        ['Cairo HQ', 'SD-WAN', 'Dual vEdge CPE', 1, 100, null],
+        ['Alexandria branch', 'BVPN Corporate', '2 CPEs / With Continuity', 1, 120, null],
+        ['Small offices (grouped)', 'Internet Essential', 'Access only', 12, 100, null]
+      ] : [
+        ['Cairo HQ', 140, null, 1, 100, null],
+        ['Giza branch', 25, null, 1, 100, null],
+        ['Kiosks (grouped)', null, 'OD/XS', 20, 100, null]
+      ];
+      examples.forEach(function (e) { ws.addRow(e); });
+
+      var head = ws.getRow(1);
+      head.height = 22;
+      head.eachCell(function (c) {
+        c.font = { bold: true, color: { argb: WHITE } };
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ACCENT } };
+        c.alignment = { vertical: 'middle' };
+      });
+      for (var r = 2; r <= 4; r++) {
+        ws.getRow(r).eachCell(function (c) { c.font = { italic: true, color: { argb: MUTED } }; });
+      }
+
+      /* Lists sheet: the exact names, used by the drop-downs. */
+      var ls = wb.addWorksheet('Lists');
+      ls.columns = [{ width: 24 }, { width: 28 }, { width: 14 }, { width: 22 }];
+      ls.getCell('A1').value = 'Products';
+      ls.getCell('B1').value = 'Connectivity modes';
+      ls.getCell('C1').value = 'Tiers';
+      ls.getCell('D1').value = 'Tier device range';
+      ['A1', 'B1', 'C1', 'D1'].forEach(function (a) { ls.getCell(a).font = { bold: true }; });
+      D.PRODUCTS.forEach(function (p, n) { ls.getCell(n + 2, 1).value = p; });
+      D.CONNECTIVITY_MODES.forEach(function (m, n) { ls.getCell(n + 2, 2).value = m; });
+      D.LAN_TIERS.forEach(function (t, n) { ls.getCell(n + 2, 3).value = t.name; ls.getCell(n + 2, 4).value = t.range; });
+
+      function listRule(range) {
+        return { type: 'list', allowBlank: true, formulae: [range], showErrorMessage: false };
+      }
+      for (var v = 2; v <= 1000; v++) {
+        if (isWan) {
+          ws.getCell(v, 2).dataValidation = listRule('Lists!$A$2:$A$' + (D.PRODUCTS.length + 1));
+          ws.getCell(v, 3).dataValidation = listRule('Lists!$B$2:$B$' + (D.CONNECTIVITY_MODES.length + 1));
+        } else {
+          ws.getCell(v, 3).dataValidation = listRule('Lists!$C$2:$C$' + (D.LAN_TIERS.length + 1));
+        }
+      }
+
+      /* How-to sheet, so the file explains itself when passed around. */
+      var hs = wb.addWorksheet('How to use');
+      hs.columns = [{ width: 110 }];
+      [
+        (isWan ? 'WAN' : 'LAN') + ' site list for the DPM FTE Calculator',
+        '',
+        'One line per site. Or one line per group of identical sites, with the group size in the Sites column.',
+        'Sites - leave blank to count the line as one site.',
+        isWan
+          ? 'Product and Connectivity mode are needed - pick from the drop-downs (the Lists sheet has the exact names).'
+          : 'Give a Device count (the tier is worked out from it) or pick a Tier. If both are filled in, the Tier wins.',
+        'Complexity % - optional, 100 = standard. Blank uses the default from Settings.',
+        'Override MD per site - optional; only used when the estimator is in Non-standard mode.',
+        'Extra columns are fine - the importer ignores anything it does not need, and you can match columns by hand.',
+        'Delete the three grey example lines before importing.',
+        '',
+        'In the calculator: ' + (isWan ? 'WAN' : 'LAN') + ' Estimator › Site allocation › Import from Excel.'
+      ].forEach(function (t, n) {
+        var c = hs.getCell(n + 1, 1);
+        c.value = t;
+        if (n === 0) c.font = { bold: true, size: 14, color: { argb: ACCENT } };
+      });
+
+      return save(wb, (isWan ? 'WAN' : 'LAN') + '_site_list_template.xlsx')
+        .then(function () { global.UI.toast('Template downloaded — fill it in, then use Import from Excel.', 'ok'); })
+        .catch(fail);
+    } catch (err) { fail(err); return Promise.resolve(); }
+  }
+
+  /* ------------------------------------------------------- capacity plan -- */
+
+  var OVER_FILL = 'FFFEE2E2', HIGH_FILL = 'FFFEF3C7', OK_FILL = 'FFDCFCE7';
+
+  function loadFill(v, limit) {
+    if (!(v > 0.005) || !(limit > 0)) return null;
+    var ratio = v / limit;
+    return ratio > 1 + 1e-9 ? OVER_FILL : (ratio >= 0.8 ? HIGH_FILL : OK_FILL);
+  }
+
+  function paintLoad(ws, row, col, v, limit) {
+    var fill = loadFill(v, limit);
+    if (!fill) return;
+    var c = ws.getCell(row, col);
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+    if (fill === OVER_FILL) c.font = { bold: true, color: { argb: 'FFB91C1C' } };
+  }
+
+  function capacityChartConfig(plan) {
+    var palette = ['#2563eb', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#dc2626',
+                   '#059669', '#9333ea', '#ca8a04', '#0369a1'];
+    var active = plan.projects.filter(function (p) { return p.windowMd > 1e-9; })
+      .sort(function (a, b) { return b.windowMd - a.windowMd; });
+    var shown = active.slice(0, 10), rest = active.slice(10);
+    var datasets = shown.map(function (p, n) {
+      return { type: 'bar', label: p.name + ' · ' + p.type, data: p.series.map(round2),
+               backgroundColor: palette[n % palette.length], stack: 'demand', order: 2 };
+    });
+    if (rest.length) {
+      datasets.push({ type: 'bar', label: rest.length + ' other project(s)', stack: 'demand', order: 2,
+        backgroundColor: '#cbd5e1',
+        data: plan.months.map(function (_, i) { return round2(rest.reduce(function (t, p) { return t + p.series[i]; }, 0)); }) });
+    }
+    if (plan.capacity > 0) {
+      datasets.push({ type: 'line', label: 'Team capacity (' + plan.capacity + ' FTE)', stack: 'capacity', order: 1,
+        data: plan.months.map(function () { return plan.capacity; }),
+        borderColor: '#dc2626', borderDash: [6, 4], borderWidth: 2, pointRadius: 0, fill: false });
+    }
+    return {
+      type: 'bar',
+      data: { labels: plan.labels, datasets: datasets },
+      options: {
+        responsive: false, animation: false, devicePixelRatio: 1, layout: { padding: 8 },
+        plugins: {
+          legend: { position: 'bottom', labels: { color: CH.ink, font: { size: 12 } } },
+          title: { display: true, text: 'Monthly demand vs. team capacity (FTE)', color: CH.ink, font: { size: 16, weight: 'bold' } }
+        },
+        scales: {
+          x: { stacked: true, grid: { display: false }, ticks: { color: CH.ink, font: { size: 12 } } },
+          y: { stacked: true, beginAtZero: true, title: { display: true, text: 'FTE', color: CH.ink }, ticks: { color: CH.ink }, grid: { color: CH.grid } }
+        }
+      },
+      plugins: [whiteBg]
+    };
+  }
+
+  /* Excel table headers must be unique text; month labels already are. */
+  function exportCapacityPlan(plan, meta) {
+    if (!available()) { global.UI.toast('Excel library unavailable.', 'err'); return Promise.resolve(); }
+    if (!plan) { global.UI.toast('Nothing to export.', 'warn'); return Promise.resolve(); }
+    try {
+      var wb = newBook();
+      var P = global.FTEPlanner;
+      var cap = plan.capacity;
+      var span = plan.labels[0] + ' - ' + plan.labels[plan.labels.length - 1];
+
+      /* ---- Team plan ---- */
+      var ws = newSheet(wb, 'Team plan', [16, 16, 16, 16, 14, 18]);
+      titleBlock(ws, 6, 'TEAM CAPACITY PLAN', span,
+        'Generated ' + new Date().toLocaleString() + '   ·   from ' + ((meta && meta.source) || 'saved estimates') +
+        '   ·   latest estimate per project' + (plan.counts.inactiveExcluded ? ', inactive projects left out' : ''));
+
+      var row = kpiBand(ws, 5, [
+        { label: 'Team capacity', value: cap, format: FMT.fte, note: 'FTE available' },
+        { label: 'Peak demand', value: plan.peak.fte, format: FMT.fte, highlight: true, note: P.monthLabel(plan.peak.month) },
+        { label: 'Overbooked months', value: plan.overbookedCount, format: FMT.int, note: 'of ' + plan.horizon },
+        { label: 'Average load', value: plan.avgLoadPct === null ? 0 : plan.avgLoadPct, format: FMT.pct, note: 'of capacity' },
+        { label: 'Projects', value: plan.counts.inWindow, format: FMT.int, note: 'in this window' },
+        { label: 'Not scheduled', value: plan.counts.unscheduled, format: FMT.int, note: 'no start month' }
+      ]) + 1;
+
+      var monthStart = row + 1;
+      row = addTable(ws, {
+        row: row, hint: 'Months', theme: 'TableStyleMedium2', filter: false,
+        columns: [
+          { name: 'Month' },
+          { name: 'Demand (FTE)', numFmt: FMT.fte, align: 'right' },
+          { name: 'Capacity (FTE)', numFmt: FMT.fte, align: 'right' },
+          { name: 'Headroom (FTE)', numFmt: FMT.fte, align: 'right' },
+          { name: 'Load', numFmt: FMT.pct, align: 'right' },
+          { name: 'Status', align: 'center' }
+        ],
+        rows: plan.months.map(function (m, i) {
+          var d = plan.demand[i];
+          return [plan.labels[i], round2(d), cap, round2(cap - d), cap > 0 ? round2(d / cap * 100) : 0,
+                  plan.overbooked[i] ? 'Overbooked' : (d > 0.005 ? 'OK' : '-')];
+        })
+      });
+      plan.months.forEach(function (_, i) {
+        paintLoad(ws, monthStart + i, 2, plan.demand[i], cap);
+        if (plan.overbooked[i]) paintLoad(ws, monthStart + i, 6, 2, 1);
+      });
+      row = note(ws, row, 'Demand in a month = that month\'s man-days / the DPM capacity the estimate used. ' +
+        'Only the latest estimate of each project counts.');
+      row = sectionLabel(ws, row + 1, 'Visualisation');
+      placeChart(wb, ws, chartToPng(capacityChartConfig(plan), 1400, 600), 0, row, 820, 352);
+
+      /* ---- Projects ---- (an Excel table needs at least one data row) */
+      if (plan.projects.length) {
+        var monthCols = plan.labels.map(function (l) { return { name: l, numFmt: FMT.fte, align: 'right' }; });
+        var ps = newSheet(wb, 'Projects', [30, 18, 8, 10, 12, 12, 10, 12, 12, 10, 10, 36]
+          .concat(plan.labels.map(function () { return 10; })));
+        titleBlock(ps, 12 + plan.labels.length, 'PROJECTS ON THE PLAN', span,
+          'Latest estimate of each project. Month columns are the FTE the project needs in that month.');
+        var prow = addTable(ps, {
+          row: 5, hint: 'PlanProjects', theme: 'TableStyleMedium2', totals: true,
+          columns: [
+            { name: 'Project', total: 'label', totalLabel: 'TOTAL' },
+            { name: 'Code' },
+            { name: 'Type', align: 'center' },
+            { name: 'Status', align: 'center' },
+            { name: 'Start' },
+            { name: 'Ends' },
+            { name: 'Months', numFmt: FMT.md1, align: 'right' },
+            { name: 'Shape', align: 'center' },
+            { name: 'Total MD', numFmt: FMT.md1, align: 'right', total: 'sum' },
+            { name: 'FTE (avg)', numFmt: FMT.fte, align: 'right' },
+            { name: 'Peak FTE', numFmt: FMT.fte, align: 'right' },
+            { name: 'DPMs' }
+          ].concat(monthCols.map(function (c) { c.total = 'sum'; return c; })),
+          rows: plan.projects.map(function (p) {
+            return [p.name, p.code, p.type, p.status,
+                    p.start ? P.monthLabel(p.start) : 'Not scheduled', p.end ? P.monthLabel(p.end) : '-',
+                    p.months, p.distribution === 'bell' ? 'Bell' : 'Flat', round2(p.totalMd), p.fte, p.peakFte,
+                    p.dpms.map(function (d) { return d.name || d.email; }).join(', ') || 'None assigned']
+              .concat(p.series.map(function (v) { return v > 0.005 ? round2(v) : null; }));
+          })
+        });
+        note(ps, prow, 'Projects marked Not scheduled have no start month and are not in the month columns.');
+      }
+
+      /* ---- DPM load ---- */
+      var busy = plan.people.filter(function (p) { return p.total > 0.005; });
+      if (busy.length) {
+        var ds = newSheet(wb, 'DPM load', [28, 36, 10, 10].concat(plan.labels.map(function () { return 10; })));
+        titleBlock(ds, 4 + plan.labels.length, 'DPM LOAD BY MONTH', span,
+          'FTE per person per month. A project\'s demand is shared equally between its assigned DPMs. Above 1.00 = overbooked.');
+        var drow = 5;
+        addTable(ds, {
+          row: drow, hint: 'DpmLoad', theme: 'TableStyleMedium2',
+          columns: [
+            { name: 'DPM' }, { name: 'Email' },
+            { name: 'Projects', numFmt: FMT.int, align: 'right' },
+            { name: 'Peak', numFmt: FMT.fte, align: 'right' }
+          ].concat(plan.labels.map(function (l) { return { name: l, numFmt: FMT.fte, align: 'right' }; })),
+          rows: busy.map(function (p) {
+            return [p.name, p.email, p.projects.filter(function (x) { return x.inWindow; }).length, round2(p.peak)]
+              .concat(p.load.map(function (v) { return v > 0.005 ? round2(v) : null; }));
+          })
+        });
+        busy.forEach(function (p, n) {
+          paintLoad(ds, drow + 1 + n, 4, p.peak, 1);
+          p.load.forEach(function (v, i) { paintLoad(ds, drow + 1 + n, 5 + i, v, 1); });
+        });
+      }
+
+      return save(wb, 'Team_capacity_plan_' + stamp() + '.xlsx')
+        .then(function () { global.UI.toast('Team plan exported.', 'ok'); })
+        .catch(fail);
+    } catch (err) { fail(err); return Promise.resolve(); }
   }
 
   function exportRecord(record) {
@@ -1005,6 +1326,8 @@
     exportRecord: exportRecord,
     exportAllRecords: exportAllRecords,
     exportProject: exportProject,
-    exportDpmDirectory: exportDpmDirectory
+    exportDpmDirectory: exportDpmDirectory,
+    downloadImportTemplate: downloadImportTemplate,
+    exportCapacityPlan: exportCapacityPlan
   };
 })(window);

@@ -110,8 +110,16 @@
     if (!CAN_REACH_HOST) return Promise.reject(new Error('no local host on this origin'));
     var opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
     return fetch(path, opts).then(function (res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return res.json();
+      /* The host explains its refusals ("that folder does not exist"), so a
+         failure carries the server's own message rather than just a code. */
+      return res.json().catch(function () { return null; }).then(function (body) {
+        if (!res.ok) {
+          var err = new Error((body && body.error) || ('HTTP ' + res.status));
+          err.status = res.status;
+          throw err;
+        }
+        return body;
+      });
     });
   }
 
@@ -162,7 +170,13 @@
         });
       })
       .then(function () { return flushPending(); })
-      .then(function (n) { emitStatus(); return { name: _folderName, flushed: n }; });
+      .then(function (n) {
+        /* A shared folder already holds colleagues' estimates - read them in. */
+        return pullFromDisk().then(function (pulled) {
+          emitStatus();
+          return { name: _folderName, flushed: n, pulled: pulled };
+        });
+      });
   }
 
   function forgetFolder() {
@@ -194,7 +208,12 @@
       _folderReady = ok;
       if (!ok) throw new Error('Permission to write to that folder was not granted.');
       return flushPending();
-    }).then(function (n) { emitStatus(); return { name: _folderName, flushed: n }; });
+    }).then(function (n) {
+      return pullFromDisk().then(function (pulled) {
+        emitStatus();
+        return { name: _folderName, flushed: n, pulled: pulled };
+      });
+    });
   }
 
   function writeToFolder(subdir, filename, text) {
@@ -208,11 +227,51 @@
       .then(function () { return subdir + '/' + filename; });
   }
 
+  /** One file from the connected folder, parsed; null when missing or unreadable. */
+  function readFolderFile(subdir, filename) {
+    if (!_folderReady || !_dirHandle) return Promise.resolve(null);
+    return _dirHandle.getDirectoryHandle(subdir, { create: false })
+      .then(function (dir) { return dir.getFileHandle(filename, { create: false }); })
+      .then(function (h) { return h.getFile(); })
+      .then(function (f) { return f.text(); })
+      .then(function (txt) { return JSON.parse(String(txt).replace(/^﻿/, '')); })
+      .catch(function () { return null; });
+  }
+
   function deleteFromFolder(subdir, filename) {
     if (!_folderReady || !_dirHandle) return Promise.resolve();
     return _dirHandle.getDirectoryHandle(subdir, { create: false })
       .then(function (dir) { return dir.removeEntry(filename); })
       .catch(function () { /* already gone, or folder never created */ });
+  }
+
+  /* Read every JSON file in a sub-folder of the connected folder. This is how
+     the hosted build sees estimates written by colleagues who connected the
+     same shared (SharePoint-synced) folder. A file that is mid-sync or
+     corrupt is counted and skipped rather than failing the whole read. */
+  function readAllFromFolder(subdir) {
+    if (!_folderReady || !_dirHandle) return Promise.reject(new Error('no folder connected'));
+    return _dirHandle.getDirectoryHandle(subdir, { create: true }).then(function (dir) {
+      var out = [], errors = 0;
+      var it = dir.values();
+      function step() {
+        return it.next().then(function (res) {
+          if (res.done) return { items: out, errors: errors };
+          var h = res.value;
+          if (h.kind !== 'file' || !/\.json$/i.test(h.name)) return step();
+          return h.getFile()
+            .then(function (f) { return f.text(); })
+            .then(function (txt) {
+              try {
+                var obj = JSON.parse(String(txt).replace(/^﻿/, ''));
+                if (obj && typeof obj === 'object') out.push(obj); else errors++;
+              } catch (e) { errors++; }
+            }, function () { errors++; })
+            .then(step);
+        });
+      }
+      return step();
+    });
   }
 
   /* ----------------------------------------------------------- status ---- */
@@ -223,12 +282,31 @@
     return 'browser';
   }
 
+  /* Which place a record was written to. Stored on the record's sync info,
+     so that "on disk here before, missing now" can be recognised as a
+     deliberate deletion by someone else rather than as work to re-publish. */
+  function currentLoc() {
+    if (_serverOnline) return 'host:' + String((_serverInfo && _serverInfo.dataRoot) || '').toLowerCase();
+    if (_folderReady) return 'folder:' + (_folderName || '');
+    return null;
+  }
+
+  /* A shared location, as opposed to the app's own private data folder. A
+     connected folder may or may not be shared, so it is treated as shared. */
+  function isSharedLocation() {
+    if (_serverOnline) return !(_serverInfo && _serverInfo.isDefaultRoot !== false);
+    return _folderReady;
+  }
+
   function status() {
     return {
       mode: mode(),
       serverOnline: _serverOnline,
       canReachHost: CAN_REACH_HOST,
       dataRoot: _serverInfo ? _serverInfo.dataRoot : null,
+      defaultDataRoot: _serverInfo ? _serverInfo.defaultDataRoot : null,
+      isDefaultRoot: _serverInfo ? _serverInfo.isDefaultRoot !== false : true,
+      shared: isSharedLocation(),
       folderSupported: FOLDER_SUPPORTED,
       folderName: _folderName,
       folderReady: _folderReady,
@@ -276,16 +354,19 @@
 
   function saveRecord(record) {
     record.sync = record.sync || {};
+    /* Keep the "came from a colleague" marker through re-saves, e.g. when a
+       planned start month is edited on the Team capacity page. */
+    var pulled = !!record.sync.pulled;
     return putLocal(STORE_RECORDS, record)
       .then(function () { return writeRecordToDisk(record); })
       .then(function (file) {
-        record.sync = { state: 'saved', file: file, at: new Date().toISOString() };
+        record.sync = { state: 'saved', file: file, loc: currentLoc(), at: new Date().toISOString(), pulled: pulled };
         return putLocal(STORE_RECORDS, record).then(function () {
           return { record: record, written: true, file: file };
         });
       })
       .catch(function () {
-        record.sync = { state: 'pending', file: null, at: new Date().toISOString() };
+        record.sync = { state: 'pending', file: null, at: new Date().toISOString(), pulled: pulled };
         return putLocal(STORE_RECORDS, record)
           /* A failed write means our belief about the backend is out of date.
              Re-check so the status chip stops claiming we are saving to disk
@@ -304,6 +385,18 @@
       });
   }
 
+  /* Re-save an estimate that may have come straight from disk - the Team
+     capacity page moves colleagues' projects too. The local copy's `pulled`
+     flag is carried over; a record never seen here before that lives in a
+     shared folder is someone else's, so it stays out of "copy my estimates". */
+  function updateRecord(record) {
+    return getLocal(STORE_RECORDS, record.id).then(function (local) {
+      var rec = Object.assign({}, record);
+      rec.sync = { pulled: local ? !!(local.sync && local.sync.pulled) : isSharedLocation() };
+      return saveRecord(rec);
+    });
+  }
+
   function listRecords() {
     return allLocal(STORE_RECORDS).then(function (rows) {
       rows.sort(function (a, b) { return (b.savedAt || '').localeCompare(a.savedAt || ''); });
@@ -313,12 +406,59 @@
 
   function getRecord(id) { return getLocal(STORE_RECORDS, id); }
 
+  /* ------------------------------------------------------- tombstones ---- */
+
+  /* A delete made while the data folder is out of reach (host stopped,
+     folder permission not yet re-granted) cannot touch the file, and the next
+     read of the folder would bring the record straight back. The id is kept
+     here until the delete reaches disk, and pulls ignore it meanwhile. */
+  var TOMBSTONES = '_tombstones';
+
+  function getTombstones() {
+    return getLocal(STORE_SETTINGS, TOMBSTONES)
+      .then(function (row) { return (row && Array.isArray(row.value)) ? row.value : []; })
+      .catch(function () { return []; });
+  }
+
+  function setTombstones(ids) { return setSetting(TOMBSTONES, ids); }
+
+  function addTombstone(id) {
+    return getTombstones().then(function (ids) {
+      if (ids.indexOf(id) < 0) ids.push(id);
+      return setTombstones(ids);
+    });
+  }
+
+  function flushTombstones() {
+    if (!_serverOnline && !_folderReady) return Promise.resolve(0);
+    return getTombstones().then(function (ids) {
+      if (!ids.length) return 0;
+      var left = [];
+      return ids.reduce(function (chain, id) {
+        return chain.then(function () {
+          var del = _serverOnline
+            ? api('/api/records/' + encodeURIComponent(id), { method: 'DELETE' })
+            : deleteFromFolder('records', id + '.json');
+          return del.catch(function () { left.push(id); });
+        });
+      }, Promise.resolve()).then(function () {
+        return setTombstones(left).then(function () { return ids.length - left.length; });
+      });
+    });
+  }
+
+  /** Resolves { onDisk } - false when the file delete is queued for later. */
   function deleteRecord(id) {
     return delLocal(STORE_RECORDS, id).then(function () {
       if (_serverOnline) {
-        return api('/api/records/' + encodeURIComponent(id), { method: 'DELETE' }).catch(function () {});
+        return api('/api/records/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function () { return { onDisk: true }; },
+                function () { return addTombstone(id).then(function () { return { onDisk: false }; }); });
       }
-      if (_folderReady) return deleteFromFolder('records', id + '.json');
+      if (_folderReady) return deleteFromFolder('records', id + '.json').then(function () { return { onDisk: true }; });
+      /* A disk backend exists but is unreachable right now. */
+      if (CAN_REACH_HOST || _dirHandle) return addTombstone(id).then(function () { return { onDisk: false }; });
+      return { onDisk: false };
     });
   }
 
@@ -332,14 +472,15 @@
      becomes available: the host comes back, or a folder is connected. */
   function flushPending() {
     if (!_serverOnline && !_folderReady) return Promise.resolve(0);
-    return listRecords().then(function (rows) {
+    return flushTombstones().then(listRecords).then(function (rows) {
       var pending = rows.filter(function (r) { return !r.sync || r.sync.state !== 'saved'; });
       if (!pending.length) return 0;
       return pending.reduce(function (chain, rec) {
         return chain.then(function (n) {
           return writeRecordToDisk(rec)
             .then(function (file) {
-              rec.sync = { state: 'saved', file: file, at: new Date().toISOString() };
+              rec.sync = { state: 'saved', file: file, loc: currentLoc(), at: new Date().toISOString(),
+                           pulled: !!(rec.sync && rec.sync.pulled) };
               return putLocal(STORE_RECORDS, rec).then(function () { return n + 1; });
             })
             .catch(function () { return n; });
@@ -348,28 +489,191 @@
     });
   }
 
-  /* Pull anything on disk that this browser profile has not seen. Disk wins:
-     it is the copy that syncs through OneDrive and that colleagues can read. */
-  function pullFromDisk() {
-    if (!_serverOnline) return Promise.resolve(0);
-    return api('/api/records').then(function (index) {
-      var entries = (index && index.records) || [];
-      return listRecords().then(function (local) {
-        var known = {};
-        local.forEach(function (r) { known[r.id] = true; });
-        var missing = entries.filter(function (e) { return e && e.id && !known[e.id]; });
-        return missing.reduce(function (chain, entry) {
-          return chain.then(function (n) {
-            return api('/api/records/' + encodeURIComponent(entry.id))
-              .then(function (full) {
-                full.sync = { state: 'saved', file: entry.file, at: new Date().toISOString() };
-                return putLocal(STORE_RECORDS, full).then(function () { return n + 1; });
-              })
-              .catch(function () { return n; });
-          });
-        }, Promise.resolve(0));
+  function withoutSync(r) {
+    var copy = Object.assign({}, r);
+    delete copy.sync;
+    return copy;
+  }
+
+  /* Every record file in the current data location, parsed. The host sends
+     each file as text so that one unreadable file costs only itself; those,
+     and files the host could not read at all, come back as `errors`. */
+  function readDiskRecords() {
+    if (_serverOnline) {
+      return api('/api/records/all').then(function (res) {
+        if (!res || !Array.isArray(res.records)) throw new Error('the data folder listing could not be read');
+        var items = [], errors = Number(res.skipped) || 0;
+        res.records.forEach(function (entry) {
+          var rec = entry;
+          if (typeof entry === 'string') {
+            try { rec = JSON.parse(entry); } catch (e) { errors++; return; }
+          }
+          if (rec && typeof rec === 'object' && rec.id) items.push(rec); else errors++;
+        });
+        return { items: items, errors: errors, location: res.dataRoot };
       });
-    }).catch(function () { return 0; });
+    }
+    if (_folderReady) {
+      return readAllFromFolder('records').then(function (res) {
+        return { items: res.items.filter(function (r) { return r && r.id; }), errors: res.errors, location: _folderName };
+      });
+    }
+    return Promise.reject(new Error('no disk backend available'));
+  }
+
+  function toIdSet(ids) {
+    var set = {};
+    (ids || []).forEach(function (id) { set[id] = true; });
+    return set;
+  }
+
+  /* Bring records read from disk into this browser. Disk wins: it is the copy
+     that syncs through OneDrive and that colleagues can edit (for instance a
+     planned start month changed on the Team capacity page), so a local copy
+     that differs is replaced - unless it is still waiting to be written, in
+     which case the local edit is the newer one.
+
+     Records that arrive from a shared location are marked `pulled`: that is
+     how "copy my estimates here" tells your own work from colleagues'. From
+     the app's own private folder everything is yours, however this browser
+     came to see it. And a record this browser once saw in this very location
+     that has since gone from it was deleted by someone - it is dropped here
+     too, but only after a complete read, so a file that is merely mid-sync is
+     never mistaken for a deletion. */
+  function mergeIntoLocal(disk) {
+    return Promise.all([listRecords(), getTombstones()]).then(function (res) {
+      var local = res[0], dead = toIdSet(res[1]);
+      var loc = currentLoc(), shared = isSharedLocation();
+      var byId = {}, onDisk = {};
+      local.forEach(function (r) { byId[r.id] = r; });
+      (disk.items || []).forEach(function (r) { onDisk[r.id] = true; });
+
+      var changes = (disk.items || []).filter(function (r) {
+        if (dead[r.id]) return false;
+        var mine = byId[r.id];
+        if (!mine) return true;
+        if (!mine.sync || mine.sync.state !== 'saved') return false;
+        return JSON.stringify(withoutSync(mine)) !== JSON.stringify(withoutSync(r));
+      });
+      var gone = disk.errors ? [] : local.filter(function (r) {
+        return !onDisk[r.id] && r.sync && r.sync.state === 'saved' && loc && r.sync.loc === loc;
+      });
+
+      var chain = changes.reduce(function (c, r) {
+        return c.then(function (n) {
+          var mine = byId[r.id];
+          var rec = withoutSync(r);
+          rec.sync = { state: 'saved', file: null, loc: loc, at: new Date().toISOString(),
+                       pulled: mine ? !!(mine.sync && mine.sync.pulled) : shared };
+          return putLocal(STORE_RECORDS, rec).then(function () { return n + 1; });
+        });
+      }, Promise.resolve(0));
+      return gone.reduce(function (c, r) {
+        return c.then(function (n) { return delLocal(STORE_RECORDS, r.id).then(function () { return n; }); });
+      }, chain);
+    });
+  }
+
+  /* Pull everything on disk in one request (the host joins the files), so a
+     shared folder of hundreds of estimates costs one round trip, not one per
+     record. */
+  function pullFromDisk() {
+    if (!_serverOnline && !_folderReady) return Promise.resolve(0);
+    return readDiskRecords().then(mergeIntoLocal).catch(function () { return 0; });
+  }
+
+  /* Every estimate the team can see, read fresh from the shared location, plus
+     this browser's estimates still waiting to be written there. A pending
+     local copy wins over the disk copy of the same id - it is the newer edit.
+     The Team capacity page uses this rather than the browser copy so a
+     colleague's deletion or edit is reflected immediately. */
+  function loadTeamRecords() {
+    var localP = Promise.all([listRecords(), getTombstones()]);
+    function combine(disk, localRes, source) {
+      var local = localRes[0], dead = toIdSet(localRes[1]);
+      var byId = {}, pendingAdded = 0;
+      (disk.items || []).forEach(function (r) { if (!dead[r.id]) byId[r.id] = r; });
+      local.forEach(function (r) {
+        if (r.sync && r.sync.state === 'saved') return;
+        if (!byId[r.id]) pendingAdded++;
+        byId[r.id] = r;
+      });
+      return {
+        source: source, location: disk.location, errors: disk.errors || 0, pendingIncluded: pendingAdded,
+        records: Object.keys(byId).map(function (k) { return byId[k]; })
+      };
+    }
+    if (_serverOnline || _folderReady) {
+      var source = _serverOnline ? 'host' : 'folder';
+      return Promise.all([readDiskRecords(), localP]).then(function (res) {
+        return combine(res[0], res[1], source);
+      });
+    }
+    return localP.then(function (res) {
+      return { source: 'browser', location: null, errors: 0, pendingIncluded: 0, records: res[0] };
+    });
+  }
+
+  /* Copy this browser's own estimates into the current data location when they
+     are not there yet - used after switching to a shared folder. Two kinds
+     are never re-published, because either would resurrect a record someone
+     deliberately deleted: estimates pulled from a shared folder (colleagues'),
+     and estimates already written to this very location once. */
+  function publishLocal() {
+    if (!_serverOnline && !_folderReady) return Promise.resolve(0);
+    var loc = currentLoc();
+    return Promise.all([readDiskRecords(), listRecords()]).then(function (res) {
+      var onDisk = {};
+      res[0].items.forEach(function (r) { onDisk[r.id] = true; });
+      var mine = res[1].filter(function (r) {
+        if (onDisk[r.id] || (r.sync && r.sync.pulled)) return false;
+        return !(r.sync && r.sync.state === 'saved' && r.sync.loc === loc);
+      });
+      return mine.reduce(function (chain, rec) {
+        return chain.then(function (n) {
+          return writeRecordToDisk(rec).then(function (file) {
+            rec.sync = { state: 'saved', file: file, loc: loc, at: new Date().toISOString(), pulled: false };
+            return putLocal(STORE_RECORDS, rec).then(function () { return n + 1; });
+          }).catch(function () { return n; });
+        });
+      }, Promise.resolve(0));
+    });
+  }
+
+  /* The newest copy of one record: the file in the data location when there
+     is one (a colleague may have changed it since this browser read it),
+     otherwise this browser's copy. Used before re-saving a record, so the
+     re-save changes only what the user changed instead of writing back a
+     stale snapshot over someone else's edit. */
+  function getFreshRecord(id) {
+    var localP = getLocal(STORE_RECORDS, id);
+    var diskP;
+    if (_serverOnline) diskP = api('/api/records/' + encodeURIComponent(id)).catch(function () { return null; });
+    else if (_folderReady) diskP = readFolderFile('records', id + '.json');
+    else diskP = Promise.resolve(null);
+    return Promise.all([diskP, localP]).then(function (res) {
+      var disk = res[0], local = res[1];
+      if (local && (!local.sync || local.sync.state !== 'saved')) return local;   // our newer, unwritten edit
+      if (disk && typeof disk === 'object' && disk.id === id) {
+        var rec = withoutSync(disk);
+        rec.sync = local ? local.sync : { pulled: isSharedLocation() };
+        return rec;
+      }
+      return local || null;
+    });
+  }
+
+  /* ------------------------------------------------------ host config ---- */
+
+  function getHostConfig() { return api('/api/config'); }
+
+  /** Point the launcher at another data folder (null/'' = back to default). */
+  function setHostDataRoot(path, copyExisting) {
+    var body = path ? { dataRoot: path, copyExisting: !!copyExisting } : { reset: true };
+    /* Re-probe either way: a failure part-way may still have moved the host. */
+    return api('/api/config', { method: 'POST', body: JSON.stringify(body) })
+      .then(function (res) { return probeServer().then(function () { return res; }); },
+            function (err) { return probeServer().then(function () { throw err; }); });
   }
 
   /* --------------------------------------------------------- projects ---- */
@@ -411,9 +715,11 @@
   }
 
   function pullProjectsFromDisk() {
-    if (!_serverOnline) return Promise.resolve(0);
-    return api('/api/projects').then(function (res) {
-      var items = (res && res.projects) || [];
+    var itemsP;
+    if (_serverOnline) itemsP = api('/api/projects').then(function (res) { return (res && res.projects) || []; });
+    else if (_folderReady) itemsP = readAllFromFolder('projects').then(function (res) { return res.items; });
+    else return Promise.resolve(0);
+    return itemsP.then(function (items) {
       return listProjects().then(function (local) {
         var known = {};
         local.forEach(function (p) { known[p.name] = true; });
@@ -540,12 +846,19 @@
     sendOutlookEmail: sendOutlookEmail,
 
     saveRecord: saveRecord,
+    updateRecord: updateRecord,
+    getFreshRecord: getFreshRecord,
     listRecords: listRecords,
     getRecord: getRecord,
     deleteRecord: deleteRecord,
     countPending: countPending,
     flushPending: flushPending,
     pullFromDisk: pullFromDisk,
+    pullProjectsFromDisk: pullProjectsFromDisk,
+    loadTeamRecords: loadTeamRecords,
+    publishLocal: publishLocal,
+    getHostConfig: getHostConfig,
+    setHostDataRoot: setHostDataRoot,
 
     saveProject: saveProject,
     listProjects: listProjects,

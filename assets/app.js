@@ -9,6 +9,8 @@
   var U = global.UI;
   var DB = global.FTEDb;
   var EX = global.FTEExport;
+  var IM = global.FTEImport;
+  var PL = global.FTEPlanner;
 
   var esc = U.esc, el = U.el, qs = U.qs, qsa = U.qsa, fmt = U.fmt;
 
@@ -22,11 +24,14 @@
     projects: [],
     selectedProject: null,
     dpmPicker: { side: 'wan', temp: [] },
-    refStage: 'Design'
+    refStage: 'Design',
+    plan: { team: null, last: null, loading: false, error: null },
+    pendingRoot: null     // data-folder path being typed in Settings, kept across re-renders
   };
 
   var PAGE_TITLES = {
     dashboard: 'Dashboard', wan: 'WAN Estimator', lan: 'LAN Estimator',
+    capacity: 'Team capacity',
     records: 'FTE Records', projects: 'Projects', dpms: 'DPM Directory',
     reference: 'Rates & Method', settings: 'Settings'
   };
@@ -75,6 +80,7 @@
     el('page-title').textContent = PAGE_TITLES[page] || page;
 
     if (page === 'records') { renderRecords(); renderPortfolio(); }
+    if (page === 'capacity') renderCapacityPage(true);
     if (page === 'projects') renderProjects();
     if (page === 'dpms') renderDpmDirectory();
     if (page === 'reference') renderReference();
@@ -143,6 +149,18 @@
            '%"></div></div><span class="share-num">' + p.toFixed(1) + '%</span></div>';
   }
 
+  /* Rows built from an imported site list remember which sites they cover;
+     the tag shows it and hovering lists the names. */
+  function importedTag(row) {
+    var list = row.sitesDetail || [];
+    if (!list.length) return '';
+    var names = list.slice(0, 12).map(function (s) {
+      return s.name + (s.count > 1 ? ' ×' + s.count : '');
+    }).join(', ') + (list.length > 12 ? ' … and ' + (list.length - 12) + ' more' : '');
+    return ' <span class="tag tag-muted" title="' + esc('From the imported site list: ' + names) + '">' +
+           list.length + ' from site list</span>';
+  }
+
   function rowActions(side, index) {
     return '<button type="button" class="icon-btn" data-row-act="edit" data-side="' + side + '" data-index="' + index +
            '" title="Edit this row" aria-label="Edit row ' + (index + 1) + '">✎</button>' +
@@ -174,7 +192,7 @@
       var unavailable = rate === null;
       return '<tr' + (unavailable ? ' class="row-invalid"' : '') + '>' +
         '<td class="idx center">' + (i + 1) + '</td>' +
-        '<td class="strong">' + esc(r.product) + '</td>' +
+        '<td class="strong">' + esc(r.product) + importedTag(r) + '</td>' +
         '<td>' + esc(r.connectivityMode) + '</td>' +
         '<td class="num" data-sort="' + r.sites + '">' + fmt.int(r.sites) + '</td>' +
         '<td class="num" data-sort="' + r.complexityPct + '">' + r.complexityPct + '%</td>' +
@@ -219,7 +237,7 @@
       var unavailable = rate === null;
       return '<tr>' +
         '<td class="idx center">' + (i + 1) + '</td>' +
-        '<td class="strong">' + esc(r.tierLabel) + '</td>' +
+        '<td class="strong">' + esc(r.tierLabel) + importedTag(r) + '</td>' +
         '<td class="num" data-sort="' + r.sites + '">' + fmt.int(r.sites) + '</td>' +
         '<td class="num" data-sort="' + r.complexityPct + '">' + r.complexityPct + '%</td>' +
         '<td class="num" data-sort="' + (rate || 0) + '">' +
@@ -312,11 +330,15 @@
       return;
     }
     if (action === 'duplicate') {
-      st.rows.splice(index + 1, 0, Object.assign({}, row));
+      /* The copy is new sites, not the same named ones counted twice. */
+      var copy = Object.assign({}, row);
+      delete copy.sitesDetail;
+      st.rows.splice(index + 1, 0, copy);
       side === 'wan' ? renderWanRows() : renderLanRows();
       return;
     }
     if (action === 'edit') {
+      var hadNames = (row.sitesDetail || []).length > 0;
       /* Load the row back into the entry fields and remove it, so editing is
          "pull it out, change it, put it back" rather than a separate mode. */
       if (side === 'wan') {
@@ -337,8 +359,263 @@
         renderLanRows();
         el('l-add-sites').focus();
       }
-      U.toast('Row moved back into the entry fields — change it and add it again.', 'info');
+      U.toast('Row moved back into the entry fields — change it and add it again.' +
+              (hadNames ? ' Its site names from the imported list are not kept.' : ''), 'info');
     }
+  }
+
+  /* ========================================================= site import = */
+
+  function colLetter(c) {
+    var s = '';
+    for (var n = c + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+    return s;
+  }
+
+  function importSiteList(side, input) {
+    var file = input.files && input.files[0];
+    input.value = '';   // so choosing the same file again still fires
+    if (!file) return;
+    IM.readFile(file).then(function (sheets) {
+      if (!sheets.length) { U.toast('No data was found in ' + file.name + '.', 'warn'); return; }
+      openImportDialog(side, file.name, sheets);
+    }).catch(function (err) {
+      U.toast('Could not read that file: ' + (err && err.message ? err.message : err), 'err');
+    });
+  }
+
+  /* Map columns, preview the grouped rows, then apply. Everything is worked
+     out again on every change so the preview is always what will be applied. */
+  function openImportDialog(side, fileName, sheets) {
+    var roles = IM.SIDE_ROLES[side];
+    var existingRows = sideState(side).rows;
+    var existingSites = existingRows.reduce(function (t, r) { return t + r.sites; }, 0);
+    var state = { sheet: 0, header: 0, mapping: {}, result: null, replace: true, setTotal: true };
+
+    function setSheet(i) {
+      state.sheet = i;
+      var rows = sheets[i].rows;
+      state.header = IM.detectHeader(rows, side);
+      state.mapping = IM.guessMapping(rows[state.header] || [], side);
+    }
+    setSheet(0);
+
+    function needed(role) {
+      if (side === 'wan') return role === 'product' || role === 'mode';
+      return role === 'devices' || role === 'tier';
+    }
+
+    var promise = U.dialog({
+      title: 'Import ' + side.toUpperCase() + ' sites from a spreadsheet',
+      confirmLabel: 'Use these rows',
+      submitOnEnter: false,
+      bodyHtml:
+        '<p>Reading <span class="code">' + esc(fileName) + '</span>. Check each column is matched correctly — ' +
+        'the preview below updates as you change them, and nothing changes in the estimator until you confirm.</p>' +
+        '<div class="map-grid mt-3">' +
+          (sheets.length > 1
+            ? '<div class="field"><label class="dlg-label" for="imp-sheet">Sheet</label>' +
+              '<select id="imp-sheet" class="dlg-input">' + sheets.map(function (s, i) {
+                return '<option value="' + i + '">' + esc(s.name) + '</option>';
+              }).join('') + '</select></div>'
+            : '') +
+          '<div class="field"><label class="dlg-label" for="imp-header">Column headings are on</label>' +
+          '<select id="imp-header" class="dlg-input"></select></div>' +
+        '</div>' +
+        '<div class="divider"><span>Columns</span></div>' +
+        '<div class="map-grid" id="imp-map"></div>' +
+        (side === 'lan'
+          ? '<p class="field-help mt-2">A LAN row needs a device count or a tier. When both are given, the tier wins.</p>'
+          : '<p class="field-help mt-2">No “number of sites” column? Then every line counts as one site.</p>') +
+        '<div class="divider"><span>Preview</span></div>' +
+        '<div id="imp-preview"></div>' +
+        '<div id="imp-options"></div>' +
+        '<p class="dlg-error" hidden></p>',
+      collect: function (root) {
+        var res = state.result;
+        if (!res || !res.ok || !res.rows.length) {
+          var errBox = qs('.dlg-error', root);
+          errBox.textContent = (res && !res.ok) ? res.error : 'No usable rows yet — check the column choices above.';
+          errBox.hidden = false;
+          return false;
+        }
+        return { result: res, replace: state.replace, setTotal: state.setTotal };
+      }
+    });
+    var box = qs('.dlg');
+    if (box) box.classList.add('wide', 'xwide');
+
+    function renderHeaderChoices() {
+      var rows = sheets[state.sheet].rows;
+      var html = '';
+      for (var r = 0; r < Math.min(rows.length, 15); r++) {
+        var cells = (rows[r] || []).map(function (c) { return String(c).trim(); }).filter(Boolean);
+        if (!cells.length) continue;
+        var preview = cells.join(' | ');
+        if (preview.length > 70) preview = preview.slice(0, 70) + '…';
+        html += '<option value="' + r + '"' + (r === state.header ? ' selected' : '') + '>Row ' + (r + 1) + ': ' + esc(preview) + '</option>';
+      }
+      el('imp-header').innerHTML = html;
+    }
+
+    function renderMapping() {
+      var headers = sheets[state.sheet].rows[state.header] || [];
+      var options = '<option value="-1">— not in the file —</option>' + headers.map(function (h, c) {
+        var name = String(h === null || h === undefined ? '' : h).trim() || '(no heading)';
+        return '<option value="' + c + '">' + esc(colLetter(c) + ' · ' + name) + '</option>';
+      }).join('');
+      el('imp-map').innerHTML = roles.map(function (role) {
+        return '<div class="field"><label class="dlg-label" for="imp-col-' + role + '">' + esc(IM.ROLES[role].label) + ' ' +
+          (needed(role)
+            ? '<span class="tag tag-info">' + (side === 'lan' ? 'this or the other' : 'needed') + '</span>'
+            : '<span class="tag tag-muted">optional</span>') + '</label>' +
+          '<select id="imp-col-' + role + '" class="dlg-input" data-imp-role="' + role + '">' + options + '</select></div>';
+      }).join('');
+      roles.forEach(function (role) {
+        var sel = el('imp-col-' + role);
+        if (sel) sel.value = String(state.mapping[role] === undefined ? -1 : state.mapping[role]);
+      });
+    }
+
+    function renderOptions() {
+      var res = state.result;
+      var host = el('imp-options');
+      if (!res || !res.ok || !res.rows.length) { host.innerHTML = ''; return; }
+      var total = state.replace ? res.totalSites : existingSites + res.totalSites;
+      host.innerHTML = '<div class="divider"><span>Apply</span></div>' +
+        (existingRows.length
+          ? '<label class="check-row"><input type="radio" name="imp-how" data-imp-how="replace"' + (state.replace ? ' checked' : '') + '>' +
+              '<span>Replace the ' + existingRows.length + ' row(s) already in the table</span></label>' +
+            '<label class="check-row"><input type="radio" name="imp-how" data-imp-how="append"' + (state.replace ? '' : ' checked') + '>' +
+              '<span>Add to the rows already in the table</span></label>'
+          : '') +
+        '<label class="check-row"><input type="checkbox" data-imp-total="1"' + (state.setTotal ? ' checked' : '') + '>' +
+          '<span>Set <b>Total sites</b> to ' + fmt.int(total) + ' so the allocation balances</span></label>';
+    }
+
+    function unknownList(map) {
+      var keys = Object.keys(map).sort(function (a, b) { return map[b] - map[a]; });
+      if (!keys.length) return '';
+      var shown = keys.slice(0, 6).map(function (k) { return '“' + esc(k) + '” (' + map[k] + ')'; }).join(', ');
+      return shown + (keys.length > 6 ? ' and ' + (keys.length - 6) + ' more' : '');
+    }
+
+    function renderPreview() {
+      var rows = sheets[state.sheet].rows;
+      var res = state.result = IM.build(rows, {
+        side: side, headerIndex: state.header, mapping: state.mapping,
+        defaultComplexity: S.settings.defaultComplexity,
+        decimalComma: !!sheets[state.sheet].decimalComma
+      });
+      var host = el('imp-preview');
+      var errBox = qs('.dlg-backdrop .dlg-error');
+      if (errBox) errBox.hidden = true;
+
+      if (!res.ok) {
+        host.innerHTML = '<div class="callout warn"><span class="callout-ic">⚠</span><span>' + esc(res.error) + '</span></div>';
+        renderOptions();
+        return;
+      }
+
+      var html = '<div class="import-summary">' +
+        '<span class="tag tag-ok">' + fmt.int(res.totalSites) + ' site(s)</span>' +
+        '<span class="tag tag-info">' + res.rows.length + ' allocation row(s)</span>' +
+        '<span class="tag tag-muted">' + res.linesUsed + ' line(s) used</span>' +
+        (res.namedSites ? '<span class="tag tag-muted">' + fmt.int(res.namedSites) + ' named</span>' : '') +
+        (res.skipped.length ? '<span class="tag tag-warn">' + res.skipped.length + ' line(s) skipped</span>' : '') +
+        (res.notOffered ? '<span class="tag tag-err">' + res.notOffered + ' not on the rate card</span>' : '') +
+        (sheets[state.sheet].truncated ? '<span class="tag tag-warn">file cut at 20,000 rows</span>' : '') +
+        '</div>';
+
+      if (res.rows.length) {
+        var head = side === 'wan'
+          ? '<th class="center">#</th><th>Product</th><th>Connectivity mode</th><th class="right">Sites</th><th class="right">Complexity</th><th class="right">Override</th>'
+          : '<th class="center">#</th><th>Tier</th><th class="right">Sites</th><th class="right">Complexity</th><th class="right">Override</th>';
+        var body = res.rows.map(function (r, i) {
+          var offered = side === 'lan' || D.lookupBaseMd(r.connectivityMode, r.product) !== null;
+          return '<tr' + (offered ? '' : ' class="row-invalid"') + '><td class="idx center">' + (i + 1) + '</td>' +
+            (side === 'wan'
+              ? '<td class="strong">' + esc(r.product) + '</td><td>' + esc(r.connectivityMode) +
+                (offered ? '' : ' <span class="tag tag-err">not offered</span>') + '</td>'
+              : '<td class="strong">' + esc(r.tierLabel) + '</td>') +
+            '<td class="num">' + fmt.int(r.sites) + '</td>' +
+            '<td class="num">' + r.complexityPct + '%</td>' +
+            '<td class="num">' + (r.overrideMdPerSite > 0 ? fmt.md(r.overrideMdPerSite) : '—') + '</td></tr>';
+        }).join('');
+        html += '<div class="table-wrap scroll-y"><table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+      } else {
+        html += '<div class="callout warn"><span class="callout-ic">⚠</span><span>No line produced a usable row. ' +
+                'Check the column choices above, and the reasons below.</span></div>';
+      }
+
+      var unk = [];
+      if (unknownList(res.unknown.product)) unk.push('<b>Products</b> ' + unknownList(res.unknown.product) + '. Known products: ' + esc(D.PRODUCTS.join(', ')) + '.');
+      if (unknownList(res.unknown.mode)) unk.push('<b>Connectivity modes</b> ' + unknownList(res.unknown.mode) + '. Known modes: ' + esc(D.CONNECTIVITY_MODES.join(', ')) + '.');
+      if (unknownList(res.unknown.tier)) unk.push('<b>Tiers</b> ' + unknownList(res.unknown.tier) + '. Known tiers: ' + esc(D.LAN_TIERS.map(function (t) { return t.name; }).join(', ')) + ', or give a device count.');
+      if (unk.length) {
+        html += '<div class="callout warn mt-3"><span class="callout-ic">⚠</span><span>Not recognised — fix these in the file and import again:<br>' +
+                unk.join('<br>') + '</span></div>';
+      }
+      if (res.notOffered) {
+        html += '<div class="callout err"><span class="callout-ic">✕</span><span>' + res.notOffered + ' row(s) pair a product with a connectivity mode ' +
+                'the rate card does not offer. They are imported so nothing is lost, but Standard mode cannot price them — change the pairing, ' +
+                'or switch to Non-standard mode and give them an override.</span></div>';
+      }
+      if (res.overrides && segValue(prefix(side) + '-mode') !== 'Non-standard') {
+        html += '<div class="callout neutral"><span class="callout-ic">ℹ</span><span>' + res.overrides + ' row(s) carry an override MD per site. ' +
+                'Overrides are only used in Non-standard mode.</span></div>';
+      }
+      if (res.skipped.length) {
+        html += '<details class="fold"><summary>' + res.skipped.length + ' line(s) skipped — show why</summary><div class="import-skips mt-2">' +
+          res.skipped.slice(0, 200).map(function (s) { return 'Row ' + s.row + ' — ' + esc(s.reason); }).join('<br>') +
+          (res.skipped.length > 200 ? '<br>…' : '') + '</div></details>';
+      }
+      if (res.warnings.length) {
+        html += '<details class="fold"><summary>' + res.warnings.length + ' note(s)</summary><div class="import-skips mt-2">' +
+          res.warnings.slice(0, 200).map(esc).join('<br>') + '</div></details>';
+      }
+      host.innerHTML = html;
+      renderOptions();
+    }
+
+    renderHeaderChoices();
+    renderMapping();
+    renderPreview();
+
+    var root = qs('.dlg-backdrop');
+    if (root) {
+      root.addEventListener('change', function (e) {
+        var t = e.target;
+        if (t.id === 'imp-sheet') {
+          setSheet(parseInt(t.value, 10) || 0);
+          renderHeaderChoices(); renderMapping(); renderPreview();
+        } else if (t.id === 'imp-header') {
+          state.header = parseInt(t.value, 10) || 0;
+          state.mapping = IM.guessMapping(sheets[state.sheet].rows[state.header] || [], side);
+          renderMapping(); renderPreview();
+        } else if (t.dataset.impRole) {
+          state.mapping[t.dataset.impRole] = parseInt(t.value, 10);
+          renderPreview();
+        } else if (t.dataset.impHow) {
+          state.replace = t.dataset.impHow === 'replace';
+          renderOptions();
+        } else if (t.dataset.impTotal) {
+          state.setTotal = t.checked;
+        }
+      });
+    }
+
+    promise.then(function (res) {
+      if (!res || res === true) return;
+      var st = sideState(side);
+      var imported = res.result.rows.map(function (r) { return Object.assign({}, r); });
+      st.rows = res.replace ? imported : st.rows.concat(imported);
+      if (res.setTotal) {
+        setVal(prefix(side) + '-sites', st.rows.reduce(function (t, r) { return t + r.sites; }, 0));
+      }
+      if (side === 'wan') renderWanRows(); else renderLanRows();
+      U.toast('Imported ' + fmt.int(res.result.totalSites) + ' site(s) as ' + imported.length + ' allocation row(s).', 'ok');
+    });
   }
 
   /* ================================================================ DPMs = */
@@ -777,11 +1054,27 @@
      projects: recalculating "Q3 EMEA" ten times keeps one code, whereas
      renaming the form to a different project earns a fresh one. Tying the
      code to the name it was minted for gives both. */
+  function normName(s) { return String(s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+  /* A project that has been estimated before keeps its code: the other
+     estimator's current code when it is the same project, else the code on
+     the newest saved estimate with this name. Without this, every page load
+     minted a new code for the same project, and the team plan could not tell
+     a re-estimate from a second project. */
+  function existingCodeFor(name, side) {
+    var key = normName(name);
+    if (!key) return null;
+    var other = sideState(side === 'wan' ? 'lan' : 'wan');
+    if (other.code && normName(other.codeName) === key) return other.code;
+    var hit = S.records.find(function (r) { return r.projectCode && normName(r.projectName) === key; });
+    return hit ? hit.projectCode : null;
+  }
+
   function ensureCode(side) {
     var st = sideState(side);
     var name = (val(prefix(side) + '-proj-name') || '').trim();
     if (!st.code || st.codeName !== name) {
-      st.code = C.makeProjectCode(name);
+      st.code = existingCodeFor(name, side) || C.makeProjectCode(name);
       st.codeName = name;
     }
     var pill = el(prefix(side) + '-code-pill');
@@ -789,6 +1082,14 @@
     pill.classList.remove('hidden');
     pill.title = 'Stable project code. Generated once and reused on every calculation and export.';
     return st.code;
+  }
+
+  /* When the project starts, for the team plan. A date-driven duration
+     already says so; otherwise it is the Planned start field. */
+  function plannedStart(side) {
+    var p = prefix(side);
+    if (sideState(side).durMode === 'dates') return (val(p + '-start-date') || '').slice(0, 7);
+    return val(p + '-start-month') || '';
   }
 
   function collectWanInput() {
@@ -837,6 +1138,7 @@
         startDate: val('w-start-date'),
         endDate: val('w-end-date'),
         durationSource: S.wan.durMode,
+        startMonth: plannedStart('wan'),
         totalSites: input.totalSites,
         mode: input.mode,
         migration: input.migration,
@@ -887,6 +1189,7 @@
         startDate: val('l-start-date'),
         endDate: val('l-end-date'),
         durationSource: S.lan.durMode,
+        startMonth: plannedStart('lan'),
         totalSites: input.totalSites,
         devices: input.devices,
         mode: input.mode,
@@ -930,17 +1233,52 @@
     });
   }
 
-  /* Notes are the one field that may change after Calculate without a
-     recalculation, so before an export, email or project save we copy the
-     live text onto the active record and re-persist it. Everything else on the
-     record stays frozen; notes are free annotation, not a calculation input. */
-  function syncActiveNotes(side) {
-    var rec = side === 'wan' ? S.wan.record : S.lan.record;
-    if (!rec) return;
-    var current = (val(prefix(side) + '-notes') || '').trim();
-    if ((rec.notes || '') === (current || '')) return;
-    rec.notes = current;
-    DB.saveRecord(rec).then(function () { return DB.listRecords(); }).then(function (rows) { S.records = rows; });
+  /* Notes and the planned start month may change after Calculate without a
+     recalculation - neither feeds the arithmetic. Before an export or email,
+     and when the start month is edited, the live values are copied onto the
+     active record and it is re-persisted. Everything else on the record stays
+     frozen. Only while the form still shows that record's project, so loading
+     a different project never writes its notes onto the old estimate. */
+  function formShowsRecord(side, rec) {
+    if (!rec) return false;
+    var formName = (val(prefix(side) + '-proj-name') || '').trim();
+    return rec.projectCode === sideState(side).code && (!formName || formName === rec.projectName);
+  }
+
+  /* Resolves with the active record, re-saved if anything changed. The
+     start month is only taken from the form when the user has just edited
+     that field (startEdited) - otherwise a month a colleague moved on the
+     team plan would be put back from this page's stale form. The re-save
+     starts from the freshest stored copy and changes only these fields. */
+  function syncActiveNotes(side, startEdited) {
+    var st = sideState(side);
+    var rec = st.record;
+    if (!formShowsRecord(side, rec)) return Promise.resolve(rec);
+    var p = prefix(side);
+    var notes = (val(p + '-notes') || '').trim();
+    var start = val(p + '-start-month') || '';
+    var notesChanged = (rec.notes || '') !== notes;
+    /* A date-driven estimate takes its start from the dates, which cannot
+       change without recalculating. */
+    var startChanged = !!startEdited && rec.inputs && rec.inputs.durationSource !== 'dates' &&
+                       (rec.inputs.startMonth || '') !== start;
+    if (!notesChanged && !startChanged) return Promise.resolve(rec);
+
+    return DB.getFreshRecord(rec.id).then(function (fresh) {
+      var target = fresh || rec;
+      if (notesChanged) target.notes = notes;
+      if (startChanged) target.inputs.startMonth = start;
+      return DB.updateRecord(target);
+    }).then(function (res) {
+      var saved = res.record;
+      if (st.record && st.record.id === saved.id) st.record = saved;
+      if (!startChanged && saved.inputs.durationSource !== 'dates') setVal(p + '-start-month', saved.inputs.startMonth || '');
+      S.plan.team = null;   // the team plan re-reads on its next visit
+      return DB.listRecords().then(function (rows) { S.records = rows; return saved; });
+    }).catch(function (err) {
+      console.error(err);
+      return rec;
+    });
   }
 
   /* ============================================================= results = */
@@ -1179,6 +1517,7 @@
             '<span>' + esc(fmt.dateTime(r.savedAt)) + '</span>' +
             '<span>' + fmt.int(r.inputs.totalSites) + ' sites · ' + esc(fmt.months(r.inputs.months)) + '</span>' +
             '<span>' + esc(r.inputs.mode) + ' mode</span>' +
+            (PL.startMonthOf(r) ? '<span>starts ' + esc(PL.monthLabel(PL.startMonthOf(r))) + '</span>' : '') +
             ((r.dpms || []).length ? '<span>' + r.dpms.length + ' DPM(s)</span>' : '') +
           '</div>' +
         '</div>' +
@@ -1213,7 +1552,8 @@
         '<p><span class="tag tag-info">' + esc(rec.projectCode) + '</span> ' +
         '<span class="tag tag-muted">' + esc(rec.id) + '</span></p>' +
         '<p class="mt-3"><b>Calculated</b> ' + esc(fmt.dateTime(rec.savedAt)) + ' · ' +
-        esc(i.mode) + ' mode · capacity ' + i.capacityMdPerMonth + ' MD per month</p>' +
+        esc(i.mode) + ' mode · capacity ' + i.capacityMdPerMonth + ' MD per month' +
+        (PL.startMonthOf(rec) ? ' · planned start <b>' + esc(PL.monthLabel(PL.startMonthOf(rec))) + '</b>' : '') + '</p>' +
         distributionNoteHtml(r) +
         '<div class="result-grid mt-3">' +
           resultCell(isShaped(r) ? 'FTE (avg)' : 'FTE', fmt.fte(r.fte)) +
@@ -1247,17 +1587,28 @@
   function deleteRecord(id) {
     var rec = S.records.find(function (r) { return r.id === id; });
     if (!rec) return;
+    var st = DB.status();
+    var offline = st.mode === 'browser' && (st.canReachHost || st.folderNeedsReconnect);
+    var where = offline
+      ? 'this browser now, and from the data folder as soon as it can be reached again'
+      : (st.shared ? 'this browser and from the shared data folder, for everyone who uses it'
+                   : (st.mode === 'browser' ? 'this browser' : 'this browser and from the data folder'));
     U.confirm('Delete this record?',
-      'This removes "' + rec.projectName + '" (' + fmt.dateTime(rec.savedAt) + ') from this browser and from the data folder. It cannot be undone.',
+      'This removes "' + rec.projectName + '" (' + fmt.dateTime(rec.savedAt) + ') from ' + where + '. It cannot be undone.',
       { confirmLabel: 'Delete', danger: true }
     ).then(function (yes) {
       if (!yes) return;
-      return DB.deleteRecord(id).then(function () { return DB.listRecords(); }).then(function (rows) {
-        S.records = rows;
-        if (S.wan.record && S.wan.record.id === id) S.wan.record = null;
-        if (S.lan.record && S.lan.record.id === id) S.lan.record = null;
-        renderRecords(); renderPortfolio(); renderDashboard();
-        U.toast('Record deleted.', 'ok');
+      return DB.deleteRecord(id).then(function (res) {
+        return DB.listRecords().then(function (rows) {
+          S.records = rows; S.plan.team = null;
+          if (S.wan.record && S.wan.record.id === id) S.wan.record = null;
+          if (S.lan.record && S.lan.record.id === id) S.lan.record = null;
+          renderRecords(); renderPortfolio(); renderDashboard();
+          /* No disk at all (plain browser mode) is not a delay worth mentioning. */
+          var queued = res && res.onDisk === false && (st.mode !== 'browser' || offline);
+          U.toast(queued ? 'Deleted here. The file will be removed from the data folder once it can be reached.'
+                         : 'Record deleted.', queued ? 'warn' : 'ok');
+        });
       });
     });
   }
@@ -1287,6 +1638,363 @@
     draw('port-lan-sites', lanSites, 'Sites', 3);
   }
 
+  /* ======================================================= team capacity = */
+
+  function teamCapacity() {
+    var v = Number(S.settings.teamCapacityFte);
+    return v > 0 ? v : D.DPMS.length;
+  }
+
+  /* Reads the shared location fresh (not this browser's copy), so a
+     colleague's new estimate or deletion shows up on the next visit. */
+  function loadTeam() {
+    S.plan.loading = true;
+    el('cap-source').innerHTML = '<div class="callout neutral"><span class="callout-ic">⏳</span><span>Reading the estimates…</span></div>';
+    return DB.loadTeamRecords().then(function (team) {
+      S.plan.team = team; S.plan.error = null;
+    }).catch(function (err) {
+      S.plan.error = (err && err.message) || String(err);
+      return DB.listRecords().then(function (rows) {
+        S.plan.team = { source: 'browser', location: null, errors: 0, pendingIncluded: 0, records: rows };
+      });
+    }).then(function () {
+      S.plan.loading = false;
+      renderCapacity();
+    });
+  }
+
+  function renderCapacityPage(reload) {
+    if (!val('cap-start')) setVal('cap-start', PL.currentMonthKey());
+    el('cap-capacity').placeholder = D.DPMS.length + ' — the DPM Directory';
+    if (document.activeElement !== el('cap-capacity')) {
+      setVal('cap-capacity', Number(S.settings.teamCapacityFte) > 0 ? S.settings.teamCapacityFte : '');
+    }
+    if (reload || !S.plan.team) loadTeam(); else renderCapacity();
+  }
+
+  function currentPlan() {
+    return PL.compute(S.plan.team ? S.plan.team.records : [], {
+      start: val('cap-start'),
+      horizon: parseInt(val('cap-horizon'), 10) || 12,
+      capacity: teamCapacity(),
+      includeInactive: segValue('cap-inactive') === 'Yes',
+      directory: D.DPMS
+    });
+  }
+
+  function renderCapacity() {
+    if (!S.plan.team || !el('page-capacity').classList.contains('active')) return;
+    var plan = currentPlan();
+    S.plan.last = plan;
+    renderCapSource(plan);
+    renderCapKpis(plan);
+    renderCapAlerts(plan);
+    renderCapChart(plan);
+    renderCapMonthTable(plan);
+    renderCapPeople(plan);
+    renderCapProjects(plan);
+    hydrateHelp();
+  }
+
+  function capSourceText() {
+    var t = S.plan.team, st = DB.status();
+    if (!t) return '';
+    if (t.source === 'host') return 'the data folder ' + (t.location || st.dataRoot || '');
+    if (t.source === 'folder') return 'the connected folder “' + (t.location || st.folderName || '') + '”';
+    return 'this browser only';
+  }
+
+  function renderCapSource(plan) {
+    var t = S.plan.team, st = DB.status(), c = plan.counts;
+    var shared = (t.source === 'host' && !st.isDefaultRoot) || t.source === 'folder';
+    var parts = [];
+    parts.push('<b>' + c.projects + ' project(s)</b> from ' + c.estimates + ' estimate(s) in ' + esc(capSourceText()) + '.');
+    if (c.superseded) parts.push(c.superseded + ' older estimate(s) of the same projects are set aside — the latest one counts.');
+    if (c.inactiveExcluded) parts.push(c.inactiveExcluded + ' inactive project(s) left out.');
+    if (t.pendingIncluded) parts.push(t.pendingIncluded + ' of your estimate(s) not yet written to disk are included.');
+    if (t.errors) parts.push(t.errors + ' file(s) could not be read (possibly still syncing) and were skipped.');
+
+    var html = '<div class="callout' + (shared ? '' : ' neutral') + '"><span class="callout-ic">' + (shared ? '👥' : '👤') + '</span><span>' +
+      parts.join(' ') +
+      (shared ? '' : '<br>This plan only sees <b>your</b> estimates. To plan across the whole team, point everyone at one ' +
+        'shared (SharePoint / Teams) folder — <a href="#" data-goto="settings">set it up in Settings</a>.') +
+      '</span></div>';
+    if (S.plan.error) {
+      html += '<div class="callout warn"><span class="callout-ic">⚠</span><span>The data folder could not be read (' +
+              esc(S.plan.error) + '), so this shows the copy saved in this browser.</span></div>';
+    }
+    el('cap-source').innerHTML = html;
+  }
+
+  function renderCapKpis(plan) {
+    var cap = plan.capacity;
+    var fromSetting = Number(S.settings.teamCapacityFte) > 0;
+    var peakOver = cap > 0 && plan.peak.fte > cap + 1e-9;
+    el('cap-kpis').innerHTML =
+      kpiCard('b', 'Team capacity', fmt.num(cap, cap % 1 ? 1 : 0) + ' FTE',
+              fromSetting ? 'Set on this page' : 'People in the DPM Directory', 'teamCapacity') +
+      kpiCard(peakOver ? 'a' : 'g', 'Peak demand', fmt.fte(plan.peak.fte) + ' FTE',
+              plan.peak.fte > 0 ? ('in ' + PL.monthLabel(plan.peak.month) + (cap > 0 ? ' · ' + fmt.pct(plan.peak.fte / cap * 100) + ' of capacity' : '')) : 'No demand in this window') +
+      kpiCard(plan.overbookedCount ? 'a' : 'g', 'Overbooked months', plan.overbookedCount + ' of ' + plan.horizon,
+              'Months where demand is above capacity') +
+      kpiCard('v', 'Projects in window', String(plan.counts.inWindow),
+              (plan.counts.unscheduled ? plan.counts.unscheduled + ' not scheduled · ' : '') +
+              plan.counts.overbookedPeople + ' DPM(s) overbooked');
+  }
+
+  function renderCapAlerts(plan) {
+    var out = [];
+    if (plan.overbookedCount) {
+      var list = [];
+      plan.overbooked.forEach(function (over, i) {
+        if (over) list.push(plan.labels[i] + ' (' + fmt.fte(plan.demand[i]) + ')');
+      });
+      out.push('<div class="callout err"><span class="callout-ic">✕</span><span><b>Demand is above the team\'s ' +
+        fmt.num(plan.capacity, plan.capacity % 1 ? 1 : 0) + ' FTE</b> in ' + plan.overbookedCount + ' month(s): ' +
+        esc(list.slice(0, 8).join(', ')) + (list.length > 8 ? ' …' : '') +
+        '. Move a start month in the table below, or plan extra people for those months.</span></div>');
+    }
+    var over = plan.people.filter(function (p) { return p.overMonths > 0; });
+    if (over.length) {
+      out.push('<div class="callout warn"><span class="callout-ic">⚠</span><span><b>' + over.length + ' DPM(s) booked above a full month</b> ' +
+        'in at least one month: ' + esc(over.slice(0, 8).map(function (p) { return p.name + ' (peak ' + fmt.fte(p.peak) + ')'; }).join(', ')) +
+        (over.length > 8 ? ' …' : '') + '.</span></div>');
+    }
+    if (plan.counts.unscheduled) {
+      out.push('<div class="callout warn"><span class="callout-ic">📅</span><span><b>' + plan.counts.unscheduled +
+        ' project(s) have no start month</b>, so they are not on the calendar yet. Set one in the table at the bottom.</span></div>');
+    }
+    var unassignedPeak = plan.unassigned.reduce(function (m, v) { return Math.max(m, v); }, 0);
+    if (unassignedPeak > 0.005) {
+      out.push('<div class="callout neutral"><span class="callout-ic">ℹ</span><span>Up to <b>' + fmt.fte(unassignedPeak) +
+        ' FTE</b> of the demand belongs to projects with no DPM assigned. It counts against the team, but not against anyone by name.</span></div>');
+    }
+    el('cap-alerts').innerHTML = out.join('');
+  }
+
+  function renderCapChart(plan) {
+    var active = plan.projects.filter(function (p) { return p.windowMd > 1e-9; })
+      .sort(function (a, b) { return b.windowMd - a.windowMd; });
+    var shown = active.slice(0, 10), rest = active.slice(10);
+    function r2(v) { return Math.round(v * 100) / 100; }
+
+    U.customChart('cap-chart', function () {
+      var dark = U.isDark();
+      var datasets = shown.map(function (p, i) {
+        return { type: 'bar', label: p.name + ' · ' + p.type, data: p.series.map(r2), backgroundColor: U.colour(i),
+                 stack: 'demand', borderRadius: 2, maxBarThickness: 56, order: 2 };
+      });
+      if (rest.length) {
+        datasets.push({ type: 'bar', label: rest.length + ' other project(s)', stack: 'demand', order: 2, maxBarThickness: 56,
+          backgroundColor: dark ? '#475569' : '#cbd5e1',
+          data: plan.months.map(function (_, idx) {
+            return r2(rest.reduce(function (t, p) { return t + p.series[idx]; }, 0));
+          }) });
+      }
+      if (plan.capacity > 0) {
+        datasets.push({ type: 'line', label: 'Team capacity (' + fmt.num(plan.capacity, plan.capacity % 1 ? 1 : 0) + ' FTE)',
+          data: plan.months.map(function () { return plan.capacity; }), stack: 'capacity', order: 1,
+          borderColor: dark ? '#f87171' : '#dc2626', backgroundColor: dark ? '#f87171' : '#dc2626',
+          borderDash: [6, 4], borderWidth: 2, pointRadius: 0, fill: false });
+      }
+      var o = U.chartOptions('FTE');
+      o.plugins.legend = { display: true, position: 'bottom',
+        labels: { boxWidth: 12, boxHeight: 12, color: dark ? '#a9b4c6' : '#475569', font: { size: 11 } } };
+      o.plugins.tooltip.mode = 'index';
+      o.plugins.tooltip.intersect = false;
+      o.plugins.tooltip.displayColors = true;
+      o.plugins.tooltip.filter = function (item) { return item.raw > 0 || item.dataset.stack === 'capacity'; };
+      o.plugins.tooltip.callbacks = {
+        footer: function (items) {
+          var i = items.length ? items[0].dataIndex : 0;
+          return 'Total demand: ' + fmt.fte(plan.demand[i]) + ' FTE';
+        }
+      };
+      o.scales.x.stacked = true;
+      o.scales.y.stacked = true;
+      return { type: 'bar', data: { labels: plan.labels, datasets: datasets }, options: o };
+    });
+  }
+
+  function heatClass(v, limit) {
+    if (!(v > 0.005)) return 'zero';
+    if (!(limit > 0)) return 'heat-ok';
+    var ratio = v / limit;
+    return ratio > 1 + 1e-9 ? 'heat-over' : (ratio >= 0.8 ? 'heat-high' : 'heat-ok');
+  }
+
+  function monthHeadCells(plan) {
+    return plan.labels.map(function (l) {
+      var parts = l.split(' ');
+      return '<th class="m">' + esc(parts[0]) + '<span class="th-unit">' + esc(parts[1]) + '</span></th>';
+    }).join('');
+  }
+
+  function renderCapMonthTable(plan) {
+    var cap = plan.capacity;
+    function row(label, values, classer, fmtFn) {
+      return '<tr><td class="strong">' + esc(label) + '</td>' + values.map(function (v, i) {
+        return '<td class="m ' + (classer ? classer(v, i) : '') + '">' + fmtFn(v) + '</td>';
+      }).join('') + '</tr>';
+    }
+    var headroom = plan.demand.map(function (d) { return cap - d; });
+    el('cap-month-table').innerHTML = '<div class="table-wrap"><table class="heat-table"><thead><tr><th>FTE</th>' +
+      monthHeadCells(plan) + '</tr></thead><tbody>' +
+      row('Demand', plan.demand, function (v) { return heatClass(v, cap); }, function (v) { return v > 0.005 ? fmt.fte(v) : '—'; }) +
+      row('Capacity', plan.months.map(function () { return cap; }), null, function (v) { return fmt.fte(v); }) +
+      row('Headroom', headroom, function (v) { return v < -1e-9 ? 'heat-over' : ''; }, function (v) { return (v > 0 ? '+' : '') + fmt.fte(v); }) +
+      '</tbody></table></div>';
+  }
+
+  function renderCapPeople(plan) {
+    var busy = plan.people.filter(function (p) { return p.total > 0.005; });
+    var free = plan.people.filter(function (p) { return !(p.total > 0.005) && p.inDirectory; });
+    var host = el('cap-people');
+
+    if (!busy.length) {
+      host.innerHTML = '<div class="empty"><div class="empty-ic">👤</div><p class="empty-title">No DPM has work in this window</p>' +
+        '<p class="empty-detail">Assign DPMs on the WAN or LAN estimator and give the project a start month — their load appears here.</p></div>' +
+        (free.length ? '<p class="card-note mt-3">' + free.length + ' people in the directory are free for the whole window.</p>' : '');
+      return;
+    }
+
+    var rows = busy.map(function (p) {
+      var projects = p.projects.filter(function (x) { return x.inWindow; });
+      var title = projects.map(function (x) {
+        return x.name + ' (' + x.type + ', ' + Math.round(x.share * 100) + '% share)';
+      }).join('\n');
+      return '<tr><td class="strong" title="' + esc(title) + '">' + esc(p.name) +
+          (p.inDirectory ? '' : ' <span class="tag tag-warn" title="Assigned on an estimate but not in your DPM Directory">not in directory</span>') +
+          '<span class="person-sub">' + projects.length + ' project(s) · peak ' + fmt.fte(p.peak) + '</span></td>' +
+        p.load.map(function (v) {
+          return '<td class="m ' + heatClass(v, 1) + '">' + (v > 0.005 ? fmt.fte(v) : '·') + '</td>';
+        }).join('') + '</tr>';
+    }).join('');
+
+    var unassigned = plan.unassigned.some(function (v) { return v > 0.005; })
+      ? '<tr class="sum"><td>No DPM assigned</td>' + plan.unassigned.map(function (v) {
+          return '<td class="m">' + (v > 0.005 ? fmt.fte(v) : '·') + '</td>';
+        }).join('') + '</tr>'
+      : '';
+
+    host.innerHTML = '<div class="table-wrap"><table class="heat-table"><thead><tr><th>DPM</th>' + monthHeadCells(plan) +
+      '</tr></thead><tbody>' + rows + unassigned +
+      '<tr class="sum"><td>Team demand</td>' + plan.demand.map(function (v) {
+        return '<td class="m">' + (v > 0.005 ? fmt.fte(v) : '·') + '</td>';
+      }).join('') + '</tr>' +
+      '</tbody></table></div>' +
+      (free.length
+        ? '<details class="fold"><summary>' + free.length + ' people in the directory have no work in this window</summary><p>' +
+          esc(free.map(function (p) { return p.name; }).join(' · ')) + '</p></details>'
+        : '');
+  }
+
+  function renderCapProjects(plan) {
+    var host = el('cap-projects');
+    el('cap-proj-count').textContent = plan.projects.length + ' project(s)';
+    if (!plan.projects.length) {
+      host.innerHTML = '<div class="empty"><div class="empty-ic">▤</div><p class="empty-title">No projects to plan</p>' +
+        '<p class="empty-detail">' + (plan.counts.inactiveExcluded
+          ? 'Every project is marked Inactive. Choose “Include” above to see them.'
+          : 'Run an estimate on the WAN or LAN page and it will appear here.') + '</p></div>';
+      return;
+    }
+    var STATE_TAG = {
+      unscheduled: '<span class="tag tag-warn">no start month</span>',
+      current: '<span class="tag tag-ok">in this window</span>',
+      later: '<span class="tag tag-muted">starts later</span>',
+      ended: '<span class="tag tag-muted">finished</span>'
+    };
+    host.innerHTML = '<div class="table-wrap"><table><thead><tr>' +
+      '<th>Project</th><th>Type</th><th>Start month</th><th>Ends</th><th class="right">Months</th>' +
+      '<th>Shape</th><th class="right">Total MD</th><th class="right">FTE (avg)</th><th class="right">Peak FTE</th>' +
+      '<th>DPMs</th><th>On the plan</th></tr></thead><tbody>' +
+      plan.projects.map(function (p) {
+        var muted = p.state === 'ended' || p.state === 'later';
+        var fromDates = !(p.record.inputs || {}).startMonth && p.start;
+        return '<tr' + (muted ? ' class="row-muted"' : '') + '>' +
+          '<td class="strong">' + esc(p.name) + (p.active ? '' : ' <span class="tag tag-muted">inactive</span>') +
+            '<span class="person-sub">' + esc(p.code) + '</span></td>' +
+          '<td><span class="tag ' + (p.type === 'WAN' ? 'tag-info' : 'tag-ok') + '">' + esc(p.type) + '</span></td>' +
+          '<td><input type="month" class="cap-month" data-cap-id="' + esc(p.id) + '" value="' + esc(p.start || '') +
+            '" aria-label="Start month for ' + esc(p.name) + '"' +
+            (fromDates ? ' title="Taken from the start date on the estimate. Changing it here overrides that for the plan."' : '') + '></td>' +
+          '<td>' + esc(p.end ? PL.monthLabel(p.end) : '—') + '</td>' +
+          '<td class="num">' + fmt.num(p.months, p.months % 1 ? 1 : 0) + '</td>' +
+          '<td>' + (p.distribution === 'bell' ? 'Bell curve' : 'Flat') + '</td>' +
+          '<td class="num">' + fmt.md1(p.totalMd) + '</td>' +
+          '<td class="num">' + fmt.fte(p.fte) + '</td>' +
+          '<td class="num">' + fmt.fte(p.peakFte) + '</td>' +
+          '<td>' + (p.dpms.length
+            ? esc(p.dpms.map(function (d) { return d.name || d.email; }).join(', '))
+            : '<span class="tag tag-warn">none assigned</span>') + '</td>' +
+          '<td>' + STATE_TAG[p.state] + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  }
+
+  /* Moving a project on the calendar writes the new start month back onto its
+     estimate - into the shared folder when there is one - so the whole team
+     sees one plan. Only the start month changes; the calculation is untouched. */
+  function updateStartMonth(id, value) {
+    var team = S.plan.team;
+    if (!team) return;
+    var idx = -1;
+    team.records.forEach(function (r, i) { if (r.id === id) idx = i; });
+    if (idx < 0) return;
+    var key = value ? PL.toMonthKey(value) : '';
+    if (value && !key) { U.toast('Pick a valid month.', 'warn'); return; }
+
+    /* Start from the newest stored copy, not the one read when this page
+       opened, so only the start month changes - never someone's later edit. */
+    DB.getFreshRecord(id).then(function (fresh) {
+      var copy = fresh || JSON.parse(JSON.stringify(team.records[idx]));
+      copy.inputs.startMonth = key;
+      return DB.updateRecord(copy);
+    }).then(function (res) {
+      team.records[idx] = res.record;
+      /* If this estimate is the one open on the WAN/LAN page, keep its
+         Planned start field in step - but only while that form still shows
+         this project, never a different one loaded since. */
+      ['wan', 'lan'].forEach(function (side) {
+        var st = sideState(side);
+        if (!st.record || st.record.id !== id) return;
+        var showing = formShowsRecord(side, st.record);
+        st.record = res.record;
+        if (showing && (res.record.inputs || {}).durationSource !== 'dates') setVal(prefix(side) + '-start-month', key);
+      });
+      return DB.listRecords().then(function (rows) {
+        S.records = rows;
+        renderCapacity();
+        renderStorageStatus();
+        if (!res.written) U.toast('Saved in this browser — it will be written to the data folder when it is reachable.', 'warn');
+        else U.toast(key ? ('Start moved to ' + PL.monthLabel(key) + ' and saved on the estimate.') : 'Start month cleared.', 'ok');
+      });
+    }).catch(function (err) {
+      U.toast('Could not save the start month: ' + (err && err.message ? err.message : err), 'err');
+    });
+  }
+
+  function saveTeamCapacity() {
+    var raw = val('cap-capacity');
+    var n = C.num(raw, NaN);
+    if (raw !== '' && !(n > 0)) { U.toast('Team capacity must be a number above zero, or blank.', 'warn'); return; }
+    var value = raw === '' ? null : n;
+    S.settings.teamCapacityFte = value;
+    DB.setSetting('teamCapacityFte', value).then(function () { renderCapacity(); });
+  }
+
+  function refreshTeam() {
+    return DB.probeServer()
+      .then(function () { return DB.pullFromDisk(); })
+      .then(function () { return DB.flushPending(); })
+      .then(function () { return DB.listRecords(); })
+      .then(function (rows) { S.records = rows; renderStorageStatus(); return loadTeam(); })
+      .then(function () {
+        U.toast('Team plan refreshed — ' + (S.plan.team ? S.plan.team.records.length : 0) + ' estimate(s) read.', 'ok');
+      });
+  }
+
   /* ============================================================ projects = */
 
   function buildProjectConfig(name) {
@@ -1298,6 +2006,7 @@
       wan: {
         projName: val('w-proj-name'), status: segValue('w-status'), pmRole: segValue('w-pm-role'),
         months: numVal('w-months') || null, startDate: val('w-start-date'), endDate: val('w-end-date'),
+        startMonth: val('w-start-month'),
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
         distribution: segValue('w-dist'), notes: (val('w-notes') || '').trim(),
@@ -1307,6 +2016,7 @@
       lan: {
         projName: val('l-proj-name'), status: segValue('l-status'), pmRole: segValue('l-pm-role'),
         months: numVal('l-months') || null, startDate: val('l-start-date'), endDate: val('l-end-date'),
+        startMonth: val('l-start-month'),
         sites: numVal('l-sites') || null, devices: numVal('l-devices'),
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
@@ -1336,6 +2046,7 @@
     setVal('w-months', w.months || '');
     setVal('w-start-date', w.startDate || '');
     setVal('w-end-date', w.endDate || '');
+    setVal('w-start-month', w.startMonth || '');
     setVal('w-sites', w.sites || '');
     if (w.projectType) setVal('w-type', w.projectType);
     if (w.migration) setSeg('w-migration', w.migration);
@@ -1350,6 +2061,7 @@
     setVal('l-months', l.months || '');
     setVal('l-start-date', l.startDate || '');
     setVal('l-end-date', l.endDate || '');
+    setVal('l-start-month', l.startMonth || '');
     setVal('l-sites', l.sites || '');
     setVal('l-devices', l.devices || 0);
     if (l.flan) setSeg('l-flan', l.flan);
@@ -1382,13 +2094,37 @@
       requiredMessage: 'Please enter a name for the project.'
     }).then(function (name) {
       if (!name) return;
-      return DB.saveProject(buildProjectConfig(name))
-        .then(function () { return DB.listProjects(); })
-        .then(function (list) {
-          S.projects = list;
-          renderProjects();
-          U.toast('Project "' + name + '" saved.', 'ok');
-        });
+      /* Re-read the folder first: a colleague may have saved a project of
+         this name since this page loaded. */
+      return DB.pullProjectsFromDisk().then(function () { return DB.listProjects(); }).then(function (list) {
+        S.projects = list;
+        return name;
+      });
+    }).then(function (name) {
+      if (!name) return;
+      /* Names are compared ignoring case because the file on disk is named
+         after the project and Windows file names ignore case. In a shared
+         folder the existing one may well be a colleague's. */
+      var clash = S.projects.find(function (p) { return String(p.name).toLowerCase() === name.toLowerCase(); });
+      var shared = DB.status().shared;
+      var ask = clash
+        ? U.confirm('Replace “' + clash.name + '”?',
+            'A saved project with this name already exists' +
+            (shared ? ' in the shared data folder, so it may be a colleague\'s' : '') +
+            ' (saved ' + fmt.dateTime(clash.savedAt) + '). Saving replaces it. Choose Cancel to pick another name.',
+            { confirmLabel: 'Replace it', danger: true })
+        : Promise.resolve(true);
+      return ask.then(function (yes) {
+        if (!yes) return;
+        var chain = (clash && clash.name !== name) ? DB.deleteProject(clash.name) : Promise.resolve();
+        return chain.then(function () { return DB.saveProject(buildProjectConfig(name)); })
+          .then(function () { return DB.listProjects(); })
+          .then(function (list) {
+            S.projects = list;
+            renderProjects();
+            U.toast('Project "' + name + '" saved.', 'ok');
+          });
+      });
     });
   }
 
@@ -1548,14 +2284,34 @@
     if (st.mode === 'host') {
       rows.push('<div class="callout"><span class="callout-ic">✓</span><span>' +
         '<b>Saving to disk through the local app host.</b> Every calculation is written as a JSON file into ' +
-        '<span class="code">' + esc(st.dataRoot || 'data') + '</span>. Because that folder sits inside OneDrive, ' +
-        'it is backed up and synced automatically.</span></div>');
+        '<span class="code">' + esc(st.dataRoot || 'data') + '</span>' +
+        (st.isDefaultRoot
+          ? ' — the app\'s own data folder, which only you use.'
+          : ' — a shared team folder: everyone pointed at it sees the same estimates and the same team plan.') +
+        '</span></div>');
+      /* The path being typed survives the re-renders a status change causes. */
+      var rootValue = S.pendingRoot !== null ? S.pendingRoot : (st.isDefaultRoot ? '' : (st.dataRoot || ''));
+      rows.push('<div class="divider"><span>Shared team folder</span></div>' +
+        '<p class="card-note">To plan across the team, everyone points the app at <b>one folder</b> — a SharePoint or Teams ' +
+        'document library synced to each PC through OneDrive (in Teams: <i>Files › Sync</i>, or <i>Add shortcut to My files</i>). ' +
+        'Paste that folder\'s path below. Each person does this once on their own PC.</p>' +
+        '<div class="field mb-0"><label for="set-data-root" data-help="sharedFolder">Folder path</label>' +
+        '<input type="text" id="set-data-root" autocomplete="off" spellcheck="false" value="' + esc(rootValue) + '" ' +
+        'placeholder="e.g. C:\\Users\\you\\Orange\\DPM Team - Documents\\FTE Data"></div>');
+      buttons.push('<button class="btn btn-primary btn-sm" data-storage-act="use-root">Use this folder</button>');
+      if (!st.isDefaultRoot) {
+        buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>');
+        buttons.push('<button class="btn btn-ghost btn-sm" data-storage-act="reset-root">Back to my own data folder</button>');
+      }
     } else if (st.mode === 'folder') {
       rows.push('<div class="callout"><span class="callout-ic">✓</span><span>' +
         '<b>Saving to the folder “' + esc(st.folderName) + '”.</b> Every calculation is written there as a JSON file, ' +
         'into <span class="code">records/</span> and <span class="code">projects/</span> sub-folders. ' +
-        'Your browser may ask you to confirm this folder again after you close and reopen it.</span></div>');
+        'Your browser may ask you to confirm this folder again after you close and reopen it.</span></div>' +
+        '<p class="card-note">To share with the team, connect a folder that is synced from SharePoint or Teams: everyone ' +
+        'who connects the same folder sees the same estimates and the same Team capacity plan.</p>');
       buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="change">Change folder</button>');
+      buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>');
       buttons.push('<button class="btn btn-ghost btn-sm" data-storage-act="forget">Stop saving to this folder</button>');
     } else if (st.folderNeedsReconnect) {
       rows.push('<div class="callout warn"><span class="callout-ic">⚠</span><span>' +
@@ -1572,7 +2328,8 @@
       rows.push('<div class="callout"><span class="callout-ic">📁</span><span>' +
         '<b>Your work is saved in this browser.</b> That survives refreshes and restarts, but it is tied to this ' +
         'browser on this machine. Connect a folder and every calculation is also written there as a JSON file you ' +
-        'can back up, share or open in any editor.</span></div>');
+        'can back up, share or open in any editor. Connect a folder synced from SharePoint or Teams and the whole ' +
+        'team shares one set of estimates and one capacity plan.</span></div>');
       buttons.push('<button class="btn btn-primary btn-sm" data-storage-act="connect">Connect a folder</button>');
     } else {
       rows.push('<div class="callout warn"><span class="callout-ic">⚠</span><span>' +
@@ -1598,12 +2355,102 @@
         '<div><span class="k">Charts library:</span> <b>' + (typeof Chart !== 'undefined' ? 'loaded' : 'MISSING') + '</b></div>' +
         '<div><span class="k">Excel library:</span> <b>' + (EX.available() ? 'loaded' : 'MISSING') + '</b></div>' +
         '</div>';
+      hydrateHelp();
+    });
+  }
+
+  /* ------------------------------------------------ shared data folder --- */
+
+  function useDataRoot() {
+    var path = (val('set-data-root') || '').trim().replace(/^"|"$/g, '');
+    if (!path) { U.toast('Paste the folder path first.', 'warn'); el('set-data-root').focus(); return; }
+    var st = DB.status();
+    if (st.dataRoot && path.toLowerCase() === String(st.dataRoot).toLowerCase()) {
+      U.toast('Already saving to that folder.', 'info');
+      return;
+    }
+    U.dialog({
+      title: 'Switch the data folder?',
+      confirmLabel: 'Switch folder',
+      bodyHtml:
+        '<p>New calculations will be saved to <span class="code">' + esc(path) + '</span>, and the estimates ' +
+        'already in that folder will appear in your records and on the Team capacity page.</p>' +
+        '<label class="check-row mt-3"><input type="checkbox" id="root-copy" checked>' +
+        '<span>Also copy my existing estimates and projects into it</span></label>' +
+        '<p class="field-help mt-2">Nothing is deleted from the current folder, and nothing already in the new ' +
+        'folder is overwritten. This PC remembers the choice; nobody else\'s setting changes.</p>',
+      collect: function (root) { return { copy: qs('#root-copy', root).checked }; }
+    }).then(function (choice) {
+      if (!choice || choice === true) return;
+      return DB.setHostDataRoot(path, choice.copy).then(function (out) {
+        S.pendingRoot = null;
+        /* The host copies the files from the private data folder. This
+           browser's own estimates that never reached that folder (or, when
+           leaving another shared folder, the ones that are genuinely this
+           person's) are published from here - never colleagues'. */
+        var extra = choice.copy ? DB.publishLocal().catch(function () { return 0; }) : Promise.resolve(0);
+        return extra.then(function (published) {
+          var copied = (out.copiedRecords || 0) + published;
+          var msg = 'Now saving to ' + out.dataRoot;
+          if (choice.copy) msg += ' — copied ' + copied + ' estimate(s) and ' + (out.copiedProjects || 0) + ' project(s)';
+          if (out.copyFailed) msg += '; ' + out.copyFailed + ' file(s) could not be copied (see the launcher window)';
+          return afterDataRootChange(msg + '.', out.copyFailed ? 'warn' : 'ok');
+        });
+      });
+    }).catch(function (err) {
+      renderStorageStatus();
+      U.toast(err && err.message ? err.message : 'Could not switch to that folder.', 'err');
+    });
+  }
+
+  function resetDataRoot() {
+    U.confirm('Go back to your own data folder?',
+      'New calculations will be saved in the app\'s own data folder again. The shared folder is left exactly as it is, ' +
+      'and colleagues keep using it.', { confirmLabel: 'Switch back' }).then(function (yes) {
+      if (!yes) return;
+      return DB.setHostDataRoot(null).then(function (out) {
+        S.pendingRoot = null;
+        return afterDataRootChange('Back to ' + out.dataRoot + '.');
+      });
+    }).catch(function (err) {
+      U.toast(err && err.message ? err.message : 'Could not switch back.', 'err');
+    });
+  }
+
+  /* After the host changes folder: read what is there, push anything still
+     waiting, and refresh every view that shows records or projects. */
+  function afterDataRootChange(message, level) {
+    return DB.pullFromDisk()
+      .then(function () { return DB.pullProjectsFromDisk(); })
+      .then(function () { return DB.flushPending(); })
+      .then(function () { return Promise.all([DB.listRecords(), DB.listProjects()]); })
+      .then(function (res) {
+        S.records = res[0]; S.projects = res[1]; S.plan.team = null;
+        renderStorageStatus(); renderRecords(); renderPortfolio(); renderProjects(); renderDashboard();
+        renderSettingsPage();
+        U.toast(message, level || 'ok');
+      });
+  }
+
+  function publishMine() {
+    DB.publishLocal().then(function (n) {
+      return DB.listRecords().then(function (rows) {
+        S.records = rows; S.plan.team = null;
+        renderRecords(); renderSettingsPage(); renderStorageStatus();
+        U.toast(n ? (n + ' of your estimate(s) copied into the data folder.')
+                  : 'Nothing to copy — your estimates are already there.', 'ok');
+      });
+    }).catch(function (err) {
+      U.toast('Could not copy: ' + (err && err.message ? err.message : err), 'err');
     });
   }
 
   /* ------------------------------------------------- folder connection --- */
 
   function handleStorageAction(action) {
+    if (action === 'use-root') { useDataRoot(); return; }
+    if (action === 'reset-root') { resetDataRoot(); return; }
+    if (action === 'publish') { publishMine(); return; }
     if (action === 'forget') {
       U.confirm('Stop saving to this folder?',
         'New calculations will be kept in this browser only. Files already written to the folder are not deleted.',
@@ -1620,12 +2467,16 @@
     var op = (action === 'reconnect') ? DB.reconnectFolder() : DB.connectFolder();
     op.then(function (res) {
       renderStorageStatus();
-      return DB.listRecords().then(function (rows) {
-        S.records = rows;
-        renderRecords();
-        U.toast(res.flushed
-          ? ('Connected to “' + res.name + '” — ' + res.flushed + ' record(s) written out.')
-          : ('Connected to “' + res.name + '”. New calculations will be saved there.'), 'ok');
+      /* A shared folder already holds colleagues' saved projects too. */
+      return DB.pullProjectsFromDisk().then(function () {
+        return Promise.all([DB.listRecords(), DB.listProjects()]);
+      }).then(function (lists) {
+        S.records = lists[0]; S.projects = lists[1]; S.plan.team = null;
+        renderRecords(); renderProjects(); renderDashboard();
+        var bits = [];
+        if (res.flushed) bits.push(res.flushed + ' record(s) written out');
+        if (res.pulled) bits.push(res.pulled + ' estimate(s) read from the folder');
+        U.toast('Connected to “' + res.name + '”' + (bits.length ? ' — ' + bits.join(', ') + '.' : '. New calculations will be saved there.'), 'ok');
       });
     }).catch(function (err) {
       /* Cancelling the picker is a normal outcome, not a failure worth shouting about. */
@@ -1913,8 +2764,12 @@
         seg.classList.add('active');
         if (group.id === 'w-mode') syncModeUi('wan');
         if (group.id === 'l-mode') syncModeUi('lan');
+        if (group.id === 'cap-inactive') renderCapacity();
         return;
       }
+
+      var gotoLink = e.target.closest('[data-goto]');
+      if (gotoLink) { e.preventDefault(); gotoPage(gotoLink.dataset.goto); return; }
 
       var durTab = e.target.closest('[data-dur]');
       if (durTab) {
@@ -2006,16 +2861,19 @@
     el('w-calculate').addEventListener('click', calculateWan);
     el('w-export').addEventListener('click', function () {
       if (!S.wan.record) { U.toast('Run a WAN calculation first.', 'warn'); return; }
-      syncActiveNotes('wan');
-      EX.exportRecord(S.wan.record);
+      syncActiveNotes('wan').then(function () { EX.exportRecord(S.wan.record); });
     });
     el('w-save-project').addEventListener('click', saveCurrentAsProject);
-    el('w-email').addEventListener('click', function () { syncActiveNotes('wan'); emailResult('wan'); });
+    el('w-email').addEventListener('click', function () { syncActiveNotes('wan').then(function () { emailResult('wan'); }); });
     el('w-assign-dpms').addEventListener('click', function () { openDpmPicker('wan'); });
     el('w-sites').addEventListener('input', renderWanAllocBadge);
     el('w-start-date').addEventListener('input', function () { recalcDuration('wan'); });
     el('w-end-date').addEventListener('input', function () { recalcDuration('wan'); });
     el('w-add-sites').addEventListener('keydown', function (e) { if (e.key === 'Enter') addWanRow(); });
+    el('w-start-month').addEventListener('change', function () { syncActiveNotes('wan', true); });
+    el('w-import-btn').addEventListener('click', function () { el('w-import-file').click(); });
+    el('w-import-file').addEventListener('change', function () { importSiteList('wan', this); });
+    el('w-import-template').addEventListener('click', function () { EX.downloadImportTemplate('wan'); });
 
     /* LAN */
     el('l-add-row').addEventListener('click', addLanRow);
@@ -2029,16 +2887,38 @@
     el('l-calculate').addEventListener('click', calculateLan);
     el('l-export').addEventListener('click', function () {
       if (!S.lan.record) { U.toast('Run a LAN calculation first.', 'warn'); return; }
-      syncActiveNotes('lan');
-      EX.exportRecord(S.lan.record);
+      syncActiveNotes('lan').then(function () { EX.exportRecord(S.lan.record); });
     });
     el('l-save-project').addEventListener('click', saveCurrentAsProject);
-    el('l-email').addEventListener('click', function () { syncActiveNotes('lan'); emailResult('lan'); });
+    el('l-email').addEventListener('click', function () { syncActiveNotes('lan').then(function () { emailResult('lan'); }); });
     el('l-assign-dpms').addEventListener('click', function () { openDpmPicker('lan'); });
     el('l-sites').addEventListener('input', renderLanAllocBadge);
     el('l-start-date').addEventListener('input', function () { recalcDuration('lan'); });
     el('l-end-date').addEventListener('input', function () { recalcDuration('lan'); });
     el('l-add-sites').addEventListener('keydown', function (e) { if (e.key === 'Enter') addLanRow(); });
+    el('l-start-month').addEventListener('change', function () { syncActiveNotes('lan', true); });
+    el('l-import-btn').addEventListener('click', function () { el('l-import-file').click(); });
+    el('l-import-file').addEventListener('change', function () { importSiteList('lan', this); });
+    el('l-import-template').addEventListener('click', function () { EX.downloadImportTemplate('lan'); });
+
+    /* Team capacity */
+    el('cap-start').addEventListener('change', renderCapacity);
+    el('cap-horizon').addEventListener('change', renderCapacity);
+    el('cap-capacity').addEventListener('change', saveTeamCapacity);
+    el('cap-refresh').addEventListener('click', refreshTeam);
+    el('cap-export').addEventListener('click', function () {
+      if (!S.plan.last) { U.toast('The plan is still loading.', 'warn'); return; }
+      EX.exportCapacityPlan(S.plan.last, { source: capSourceText() });
+    });
+    el('cap-projects').addEventListener('change', function (e) {
+      var input = e.target.closest('input[data-cap-id]');
+      if (input) updateStartMonth(input.dataset.capId, input.value);
+    });
+
+    /* Settings: remember a half-typed data folder path across re-renders. */
+    document.addEventListener('input', function (e) {
+      if (e.target && e.target.id === 'set-data-root') S.pendingRoot = e.target.value;
+    });
 
     /* Records */
     ['rec-search', 'rec-type', 'rec-status', 'rec-sort'].forEach(function (id) {
@@ -2130,8 +3010,12 @@
         });
     });
     el('maint-purge').addEventListener('click', function () {
+      var st = DB.status();
+      var shared = st.shared;
       U.confirm('Delete every FTE record?',
-        'All ' + S.records.length + ' saved calculations will be removed from this browser and from the data folder. This cannot be undone.',
+        'All ' + S.records.length + ' saved calculations will be removed from this browser and from the data folder. ' +
+        (shared ? 'The data folder is shared, so this also deletes your colleagues\' estimates for everyone. ' : '') +
+        'This cannot be undone.',
         { confirmLabel: 'Delete everything', danger: true }).then(function (yes) {
         if (!yes) return;
         return S.records.reduce(function (chain, r) {
