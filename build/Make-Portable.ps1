@@ -63,6 +63,7 @@ $scripts = @(
     'lib\chart.umd.min.js',
     'lib\exceljs.min.js',
     'assets\dpm-directory.js',
+    'assets\release-notes.js',
     'assets\data.js',
     'assets\calc.js',
     'assets\db.js',
@@ -70,6 +71,7 @@ $scripts = @(
     'assets\export.js',
     'assets\import.js',
     'assets\planner.js',
+    'assets\updates.js',
     'assets\app.js'
 )
 

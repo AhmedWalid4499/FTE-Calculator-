@@ -38,7 +38,10 @@ param(
     [int]    $PortStart = 8080,
     [int]    $PortEnd   = 8090,
     [string] $DataRoot  = '',     # overrides config.json; blank = config or default
-    [switch] $NoBrowser
+    [switch] $NoBrowser,
+    # Where updates come from. Only ever changed for testing the updater.
+    [string] $UpdateNotesUrl = 'https://raw.githubusercontent.com/AhmedWalid4499/FTE-Calculator-/main/assets/release-notes.js',
+    [string] $UpdateZipUrl   = 'https://codeload.github.com/AhmedWalid4499/FTE-Calculator-/zip/refs/heads/main'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,6 +49,10 @@ $ErrorActionPreference = 'Stop'
 # property an object does not have. JSON payloads may legitimately omit
 # optional fields, so optional values are always read through Get-Prop.
 Set-StrictMode -Version 2.0
+
+# At script scope the -DataRoot parameter and $script:DataRoot (the folder in
+# use, which Settings can change) are the same variable - keep what was asked.
+$ForcedDataRoot = $DataRoot
 
 # ---------------------------------------------------------------- paths ----
 $AppRoot         = Split-Path -Parent $PSScriptRoot
@@ -89,6 +96,38 @@ function Get-Prop {
     if ($p) { return $p.Value }
     return $null
 }
+
+# ------------------------------------------------------------ versions ----
+
+# assets\release-notes.js is the single source of the version: the JSON
+# between its /*JSON*/ and /*END*/ markers.
+function Get-ReleaseInfo {
+    param([string]$Text)
+    $a = $Text.IndexOf('/*JSON*/'); $b = $Text.IndexOf('/*END*/')
+    if ($a -lt 0 -or $b -le $a) { throw 'the release notes could not be read' }
+    $info = $Text.Substring($a + 8, $b - $a - 8) | ConvertFrom-Json
+    if (-not (Get-Prop $info 'version')) { throw 'the release notes name no version' }
+    return $info
+}
+
+# -1, 0 or 1, comparing "2.10.0" with "2.9.1" part by part as numbers.
+function Compare-Version {
+    param([string]$A, [string]$B)
+    $pa = ([string]$A).Split('.'); $pb = ([string]$B).Split('.')
+    $n = [Math]::Max($pa.Count, $pb.Count)
+    for ($i = 0; $i -lt $n; $i++) {
+        $x = 0; $y = 0
+        if ($i -lt $pa.Count) { [void][int]::TryParse($pa[$i], [ref]$x) }
+        if ($i -lt $pb.Count) { [void][int]::TryParse($pb[$i], [ref]$y) }
+        if ($x -ne $y) { if ($x -gt $y) { return 1 } else { return -1 } }
+    }
+    return 0
+}
+
+$script:ReleaseInfo = Get-ReleaseInfo ([System.IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'assets\release-notes.js'), $Utf8))
+$script:AppVersion = [string]$script:ReleaseInfo.version
+$script:FolderMinVersion = [string](Get-Prop $script:ReleaseInfo 'folderMinVersion')
+if (-not $script:FolderMinVersion) { $script:FolderMinVersion = $script:AppVersion }
 
 # Reject anything that could escape the intended directory.
 function Test-SafeRelativePath {
@@ -227,6 +266,354 @@ function Set-DataRoot {
         $legacy = Join-Path $full 'index.json'
         if (Test-Path -LiteralPath $legacy) { Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue }
     }
+    Update-FolderMarker $full
+}
+
+# --------------------------------------------------------- folder marker ----
+
+# fte-folder.json in a data folder records the oldest app version allowed to
+# write there. A newer release that changes how the folder is organised
+# raises it, and every copy of the app older than that refuses to save
+# instead of writing in the old layout. It is only ever raised, never lowered.
+$script:MarkerName = 'fte-folder.json'
+
+# @{ state = 'absent' | 'ok' | 'unreadable'; minVersion }. A marker that is
+# there but cannot be read (half-synced, hand-edited) is treated as "unknown"
+# and fails closed: nothing is saved and it is never overwritten.
+function Get-FolderMarker {
+    param([string]$Root)
+    $f = Join-Path $Root $script:MarkerName
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return @{ state = 'absent'; minVersion = '' } }
+    try {
+        $m = [System.IO.File]::ReadAllText($f, $Utf8) | ConvertFrom-Json
+        $v = [string](Get-Prop $m 'minVersion')
+        if (-not $v) { throw 'no minVersion' }
+        return @{ state = 'ok'; minVersion = $v }
+    } catch { return @{ state = 'unreadable'; minVersion = '' } }
+}
+
+# Only a published copy raises the marker. A developer's git working copy
+# runs versions nobody else can install yet; raising the shared folder's
+# minimum from there would lock the whole team out of saving.
+function Update-FolderMarker {
+    param([string]$Root)
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return }
+    if ((Get-InstallMode) -eq 'git') { return }
+    $m = Get-FolderMarker $Root
+    if ($m.state -eq 'unreadable') { return }
+    if ($m.minVersion -and (Compare-Version $m.minVersion $script:FolderMinVersion) -ge 0) { return }
+    $marker = [ordered]@{
+        app        = 'DPM FTE Calculator'
+        about      = 'The oldest version of the app allowed to save into this folder. Older copies must be updated first.'
+        layout     = 'project folders'
+        minVersion = $script:FolderMinVersion
+        writtenBy  = $script:AppVersion
+        updatedAt  = (Get-Date).ToString('o')
+    }
+    try { Write-TextFile -Path (Join-Path $Root $script:MarkerName) -Content ($marker | ConvertTo-Json) }
+    catch { Write-Log "could not write $($script:MarkerName): $($_.Exception.Message)" 'DarkYellow' }
+}
+
+# Why this request may not change data, or $null when it may. The page must be
+# the same version as this host (an open tab from before an update would
+# otherwise save the old way), and the folder must not need a newer app.
+function Get-WriteRefusal {
+    param([hashtable]$Headers)
+    $stale = Get-StaleLauncherMessage
+    if ($stale) { return $stale }
+    $pageVersion = Get-HeaderText $Headers 'x-fte-version'
+    if (-not $pageVersion -or (Compare-Version $pageVersion $script:AppVersion) -ne 0) {
+        return "This page is from a different version of the app than the launcher ($script:AppVersion). Reload the page and try again."
+    }
+    $m = Get-FolderMarker $script:DataRoot
+    if ($m.state -eq 'unreadable') {
+        return "The data folder's $($script:MarkerName) cannot be read (still syncing?), so nothing is saved for now. Try again in a moment; if it persists, fix or delete that file."
+    }
+    if ($m.minVersion -and (Compare-Version $m.minVersion $script:AppVersion) -gt 0) {
+        return "This data folder needs version $($m.minVersion) or later of the app - this copy is $script:AppVersion. Update it from the Dashboard, then try again."
+    }
+    return $null
+}
+
+# The version in assets\release-notes.js right now. It differs from the one
+# this launcher started with when the app's files changed underneath it -
+# a second launcher installed an update, OneDrive synced a newer copy in, or
+# the developer pulled. Pages then load the new files while this process is
+# still the old one; the only cure is restarting the launcher.
+$script:DiskVersionStamp = ''
+$script:DiskVersion = $script:AppVersion
+function Get-DiskVersion {
+    $f = Join-Path $AppRoot 'assets\release-notes.js'
+    try {
+        $stamp = [string](Get-Item -LiteralPath $f).LastWriteTimeUtc.Ticks
+        if ($stamp -ne $script:DiskVersionStamp) {
+            $script:DiskVersion = [string](Get-ReleaseInfo ([System.IO.File]::ReadAllText($f, $Utf8))).version
+            $script:DiskVersionStamp = $stamp
+        }
+    } catch { }
+    return $script:DiskVersion
+}
+
+function Get-StaleLauncherMessage {
+    $disk = Get-DiskVersion
+    if ($disk -eq $script:AppVersion) { return $null }
+    return "The app's files are version $disk but this launcher window is still running $script:AppVersion. Close the launcher window and start 'Start FTE Calculator.cmd' again."
+}
+
+function Test-WriteAllowed {
+    param([System.IO.Stream]$Stream, [hashtable]$Headers)
+    $why = Get-WriteRefusal $Headers
+    if (-not $why) { return $true }
+    Write-Log "refused a write: $why" 'DarkYellow'
+    Send-Error $Stream 426 'Upgrade Required' $why
+    return $false
+}
+
+# --------------------------------------------------------------- updates ----
+
+$script:UpdateInfo = $null         # the last check, returned by /api/update/*
+$script:RestartRequested = $false  # set by an install; the main loop restarts
+
+# Downloads go through curl.exe, which ships with Windows 10 and 11. On some
+# corporate networks Windows PowerShell's own .NET requests to GitHub simply
+# time out while curl gets through in a fraction of a second, so .NET is only
+# the fallback, for when curl is missing or cannot connect at all.
+$script:Curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+
+# @{ ok; code; message }. Exit codes 5, 6, 7, 28 and 35 mean curl could not
+# connect (proxy, DNS, refused, timeout, TLS); anything else is an answer.
+function Invoke-Curl {
+    param([string]$Url, [string]$OutFile, [int]$TimeoutSec)
+    if (-not (Test-Path -LiteralPath $script:Curl)) { return @{ ok = $false; code = -1; message = 'curl.exe is not available' } }
+    $errFile = [System.IO.Path]::GetTempFileName()
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $script:Curl --silent --show-error --location --fail --max-time $TimeoutSec `
+            --user-agent ('DPM-FTE-Calculator/' + $script:AppVersion) --output $OutFile --stderr $errFile $Url
+        $code = $LASTEXITCODE
+        if ($code -eq 0) { return @{ ok = $true; code = 0; message = '' } }
+        return @{ ok = $false; code = $code; message = ([System.IO.File]::ReadAllText($errFile)).Trim() }
+    } finally {
+        $ErrorActionPreference = $old
+        Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-CurlCouldNotConnect { param($Result) return ($Result.code -in @(-1, 5, 6, 7, 28, 35)) }
+
+function New-DotNetRequest {
+    param([string]$Url, [int]$TimeoutMs)
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+    $req = [System.Net.WebRequest]::Create($Url)
+    $req.Timeout = $TimeoutMs
+    if ($req -is [System.Net.HttpWebRequest]) {
+        $req.UserAgent = 'DPM-FTE-Calculator/' + $script:AppVersion
+        $req.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+        $req.Proxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+    }
+    return $req
+}
+
+function Get-RemoteText {
+    param([string]$Url, [int]$TimeoutMs = 6000)
+    $u = $Url
+    if ($u -match '^https?://') {
+        $u += $(if ($u.Contains('?')) { '&' } else { '?' }) + 't=' + [DateTime]::UtcNow.Ticks
+        $tmp = [System.IO.Path]::GetTempFileName()
+        try {
+            $r = Invoke-Curl -Url $u -OutFile $tmp -TimeoutSec ([Math]::Max(3, [int]($TimeoutMs / 1000)))
+            if ($r.ok) { return [System.IO.File]::ReadAllText($tmp, $Utf8) }
+            if (-not (Test-CurlCouldNotConnect $r)) { throw $r.message }
+        } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+    try {
+        $resp = (New-DotNetRequest $u $TimeoutMs).GetResponse()
+        try {
+            $reader = New-Object System.IO.StreamReader($resp.GetResponseStream(), $Utf8)
+            return $reader.ReadToEnd()
+        } finally { $resp.Close() }
+    } catch { throw $_.Exception.GetBaseException().Message }
+}
+
+function Save-RemoteFile {
+    param([string]$Url, [string]$Path, [int]$TimeoutMs = 120000)
+    if ($Url -match '^https?://') {
+        $r = Invoke-Curl -Url $Url -OutFile $Path -TimeoutSec ([int]($TimeoutMs / 1000))
+        if ($r.ok) { return }
+        if (-not (Test-CurlCouldNotConnect $r)) { throw "the download failed: $($r.message)" }
+    }
+    try {
+        $resp = (New-DotNetRequest $Url $TimeoutMs).GetResponse()
+        try {
+            $in = $resp.GetResponseStream()
+            $out = [System.IO.File]::Create($Path)
+            try { $in.CopyTo($out) } finally { $out.Close() }
+        } finally { $resp.Close() }
+    } catch { throw "the download failed: $($_.Exception.GetBaseException().Message)" }
+}
+
+# How this copy of the app can be updated: 'git' for a git working folder
+# (the developer's copy - updated with git pull, and only when clean), 'zip'
+# for a downloaded copy (the new version is downloaded and copied over it).
+function Get-InstallMode {
+    if (Test-Path -LiteralPath (Join-Path $AppRoot '.git')) { return 'git' }
+    return 'zip'
+}
+
+function Invoke-UpdateCheck {
+    param([int]$TimeoutMs = 6000)
+    $info = [ordered]@{
+        current = $script:AppVersion; latest = $null; available = $false; releases = @()
+        checkedAt = (Get-Date).ToString('o'); error = $null; installMode = (Get-InstallMode)
+    }
+    try {
+        $remote = Get-ReleaseInfo (Get-RemoteText $UpdateNotesUrl $TimeoutMs)
+        $info.latest = [string]$remote.version
+        $info.available = ((Compare-Version $info.latest $script:AppVersion) -gt 0)
+        $info.releases = @(@(Get-Prop $remote 'releases') | Where-Object { $_ -and (Compare-Version ([string]$_.version) $script:AppVersion) -gt 0 })
+    } catch {
+        $info.error = "Could not reach GitHub to check for updates ($($_.Exception.GetBaseException().Message))."
+    }
+    $script:UpdateInfo = $info
+    return $info
+}
+
+# The last check, repeated when it is old: a launcher left open for days must
+# still notice a release, and a failed check (offline at start) is retried
+# soon rather than reported for the rest of the day.
+function Get-UpdateInfo {
+    $i = $script:UpdateInfo
+    if ($i) {
+        $age = ((Get-Date) - [DateTime]::Parse($i.checkedAt)).TotalMinutes
+        if ($i.error) { if ($age -lt 2) { return $i } }
+        elseif ($age -lt 15) { return $i }
+    }
+    return (Invoke-UpdateCheck)
+}
+
+# Copy the app's own files from one folder to another. Never the data, the
+# per-PC setting, backups, git's folder or the generated single-file build.
+$script:KeepOut = @('data', 'backup', 'config.json', '.git', 'DPM-FTE-Calculator-portable.html')
+# The launcher's .cmd is still being read by cmd.exe while this runs, and
+# cmd.exe continues from its old position in the file - replacing it now
+# would run whatever lands there. It is staged next to it instead and
+# swapped in by the new launcher (Install-StagedLauncher).
+$script:LauncherCmd = 'Start FTE Calculator.cmd'
+function Copy-AppFiles {
+    param([string]$From, [string]$To, [switch]$Live)
+    if (-not (Test-Path -LiteralPath $To)) { New-Item -ItemType Directory -Path $To -Force | Out-Null }
+    foreach ($item in @(Get-ChildItem -LiteralPath $From -Force)) {
+        if ($script:KeepOut -contains $item.Name) { continue }
+        if ($Live -and $item.Name -eq $script:LauncherCmd) {
+            $cur = Join-Path $To $item.Name
+            $same = (Test-Path -LiteralPath $cur) -and ((Get-FileHash -LiteralPath $cur).Hash -eq (Get-FileHash -LiteralPath $item.FullName).Hash)
+            if (-not $same) { Copy-Item -LiteralPath $item.FullName -Destination ($cur + '.new') -Force }
+            continue
+        }
+        Copy-Item -LiteralPath $item.FullName -Destination $To -Recurse -Force
+    }
+}
+
+# Put back what Copy-AppFiles replaced. Keeps going past an item that cannot
+# be restored, and reports every one of them.
+function Restore-AppFiles {
+    param([string]$From, [string]$To)
+    $failed = @()
+    foreach ($item in @(Get-ChildItem -LiteralPath $From -Force)) {
+        if ($item.Name -eq $script:LauncherCmd) { continue }
+        try { Copy-Item -LiteralPath $item.FullName -Destination $To -Recurse -Force }
+        catch { $failed += $item.Name }
+    }
+    return $failed
+}
+
+function Install-StagedLauncher {
+    $staged = Join-Path $AppRoot ($script:LauncherCmd + '.new')
+    if (-not (Test-Path -LiteralPath $staged)) { return }
+    # Copied over in place, never Move-Item -Force: that deletes the target
+    # first, and if the move then fails (OneDrive still uploading the new
+    # file) there is no launcher left to double-click. A staged copy that
+    # cannot be removed yet is simply copied again at the next start.
+    try {
+        [System.IO.File]::Copy($staged, (Join-Path $AppRoot $script:LauncherCmd), $true)
+        Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+    } catch { Write-Log "could not replace '$($script:LauncherCmd)' yet: $($_.Exception.Message)" 'DarkYellow' }
+}
+
+function Install-FromZip {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('fte-update-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    try {
+        $zip = Join-Path $tmp 'update.zip'
+        Write-Log 'downloading the update...' 'Cyan'
+        Save-RemoteFile $UpdateZipUrl $zip
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $x = Join-Path $tmp 'x'
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $x)
+        # GitHub's zip holds one top folder ("FTE-Calculator--main").
+        $src = $x
+        if (-not (Test-Path -LiteralPath (Join-Path $src 'index.html'))) {
+            $top = @(Get-ChildItem -LiteralPath $x -Directory) | Select-Object -First 1
+            if ($top) { $src = $top.FullName }
+        }
+        foreach ($need in @('index.html', 'server\serve.ps1', 'assets\release-notes.js', 'assets\app.js')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $src $need))) { throw "the download is incomplete ($need is missing)" }
+        }
+        $newInfo = Get-ReleaseInfo ([System.IO.File]::ReadAllText((Join-Path $src 'assets\release-notes.js'), $Utf8))
+        $newVersion = [string]$newInfo.version
+        if ((Compare-Version $newVersion $script:AppVersion) -le 0) { throw "the download is version $newVersion, which is not newer than $script:AppVersion" }
+
+        # Keep the current files, so a failed copy can be put back - and so
+        # the previous version is at hand if the new one misbehaves. The copy
+        # is made under a temporary name and only replaces the older backup
+        # once it is complete: a backup cut short never costs the last good one.
+        $backupRoot = Join-Path $AppRoot 'backup'
+        $backup = Join-Path $backupRoot ('version-' + $script:AppVersion)
+        $fresh = $backup + '.new'
+        if (Test-Path -LiteralPath $fresh) { Remove-Item -LiteralPath $fresh -Recurse -Force }
+        Copy-AppFiles -From $AppRoot -To $fresh
+        foreach ($old in @(Get-ChildItem -LiteralPath $backupRoot -Directory -Force)) {
+            if ($old.FullName -ne $fresh) { Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        if (Test-Path -LiteralPath $backup) { throw "the older backup in '$backup' could not be replaced - close anything using it and try again" }
+        Move-Item -LiteralPath $fresh -Destination $backup
+
+        try { Copy-AppFiles -From $src -To $AppRoot -Live }
+        catch {
+            $why = $_.Exception.Message
+            Write-Log "update failed, putting the previous version back: $why" 'Red'
+            Remove-Item -LiteralPath (Join-Path $AppRoot ($script:LauncherCmd + '.new')) -Force -ErrorAction SilentlyContinue
+            $failed = @(Restore-AppFiles -From $backup -To $AppRoot)
+            if ($failed.Count) {
+                throw "$why. Some files could not be put back ($($failed -join ', ')) - copy them from '$backup'."
+            }
+            throw
+        }
+        return $newVersion
+    } finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-FromGit {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) { throw 'This copy is a git working folder, but git is not installed. Update it with git.' }
+    # git writes progress to stderr; that is not an error here.
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $dirty = (& git -C $AppRoot status --porcelain 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "git could not read this folder: $dirty" }
+        if ($dirty) { throw 'This copy has local changes that are not committed, so it was not updated. Commit or discard them, then update with git pull.' }
+        $out = (& git -C $AppRoot pull --ff-only 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "git pull did not succeed: $out" }
+    } finally { $ErrorActionPreference = $old }
+    $now = [string](Get-ReleaseInfo ([System.IO.File]::ReadAllText((Join-Path $AppRoot 'assets\release-notes.js'), $Utf8))).version
+    if ((Compare-Version $now $script:AppVersion) -le 0) {
+        throw "git pull finished, but this folder is still version $now. Check which branch and remote it follows."
+    }
+    return $now
 }
 
 function Read-Config {
@@ -567,6 +954,41 @@ function Invoke-ApiRoute {
         [hashtable]$Headers = @{}
     )
 
+    # --- updates ------------------------------------------------------------
+    # status: the last check (made at start-up); check: ask GitHub now;
+    # install: download and install it, then restart on the same port.
+    if ($Path -eq '/api/update/status') {
+        Send-Json -Stream $Stream -Object (Get-UpdateInfo)
+        return
+    }
+    if ($Path -eq '/api/update/check') {
+        if ($Method -ne 'POST') { Send-Error $Stream 405 'Method Not Allowed' 'POST only'; return }
+        Send-Json -Stream $Stream -Object (Invoke-UpdateCheck)
+        return
+    }
+    if ($Path -eq '/api/update/install') {
+        if ($Method -ne 'POST') { Send-Error $Stream 405 'Method Not Allowed' 'POST only'; return }
+        # Files already newer than this process: installing again would back
+        # up and overwrite the newer files with a mix. Restart first.
+        $stale = Get-StaleLauncherMessage
+        if ($stale) { Send-Error $Stream 409 'Conflict' $stale; return }
+        $info = Invoke-UpdateCheck
+        if ($info.error) { Send-Error $Stream 502 'Bad Gateway' $info.error; return }
+        if (-not $info.available) { Send-Error $Stream 409 'Conflict' "You already have the latest version ($script:AppVersion)."; return }
+        try {
+            $mode = Get-InstallMode
+            $installed = if ($mode -eq 'git') { Install-FromGit } else { Install-FromZip }
+        } catch {
+            Write-Log "update failed: $($_.Exception.Message)" 'Red'
+            Send-Error $Stream 500 'Internal Server Error' ("The update could not be installed: " + $_.Exception.Message)
+            return
+        }
+        Write-Log "updated from $script:AppVersion to $installed - restarting" 'Green'
+        Send-Json -Stream $Stream -Object ([ordered]@{ ok = $true; from = $script:AppVersion; to = $installed; restarting = $true })
+        $script:RestartRequested = $true
+        return
+    }
+
     # --- every workbook in the project folders (for Rebuild's tidy-up) -----
     if ($Path -eq '/api/project-files/list') {
         $items = @()
@@ -585,6 +1007,7 @@ function Invoke-ApiRoute {
     # folder is left empty, the folder too. Folder and file name come in the
     # X-FTE-Folder / X-FTE-Name headers.
     if ($Path -eq '/api/project-files') {
+        if (-not (Test-WriteAllowed $Stream $Headers)) { return }
         $folder = Get-HeaderText $Headers 'x-fte-folder'
         $name   = Get-HeaderText $Headers 'x-fte-name'
         if (-not (Test-ProjectFolderName $folder)) { Send-Error $Stream 400 'Bad Request' 'invalid project folder name'; return }
@@ -630,7 +1053,11 @@ function Invoke-ApiRoute {
         Send-Json -Stream $Stream -Object ([ordered]@{
             ok              = $true
             app             = 'DPM FTE Calculator'
-            version         = '2.1.0'
+            version         = $script:AppVersion
+            folderNeeds     = (Get-FolderMarker $script:DataRoot).minVersion
+            folderMarker    = (Get-FolderMarker $script:DataRoot).state
+            diskVersion     = (Get-DiskVersion)
+            staleLauncher   = [string](Get-StaleLauncherMessage)
             dataRoot        = $script:DataRoot
             defaultDataRoot = $DefaultDataRoot
             isDefaultRoot   = (Test-IsDefaultRoot $script:DataRoot)
@@ -801,6 +1228,7 @@ function Invoke-ApiRoute {
                 return
             }
             'POST' {
+                if (-not (Test-WriteAllowed $Stream $Headers)) { return }
                 $rec = $Body | ConvertFrom-Json
                 $id  = [string](Get-Prop $rec 'id')
                 if (-not $id) { Send-Error $Stream 400 'Bad Request' 'record.id is required'; return }
@@ -859,6 +1287,7 @@ function Invoke-ApiRoute {
                 return
             }
             'DELETE' {
+                if (-not (Test-WriteAllowed $Stream $Headers)) { return }
                 if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
                 # Every copy of the estimate - in its project folder, the old
                 # records\ folder, or an OneDrive conflict copy - or it comes back.
@@ -889,6 +1318,7 @@ function Invoke-ApiRoute {
                 return
             }
             'POST' {
+                if (-not (Test-WriteAllowed $Stream $Headers)) { return }
                 $proj  = $Body | ConvertFrom-Json
                 $pname = [string](Get-Prop $proj 'name')
                 if (-not $pname) { Send-Error $Stream 400 'Bad Request' 'project.name is required'; return }
@@ -916,6 +1346,7 @@ function Invoke-ApiRoute {
                 return
             }
             'DELETE' {
+                if (-not (Test-WriteAllowed $Stream $Headers)) { return }
                 if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
                 Write-Log "deleted project '$pname'" 'DarkYellow'
                 Send-Json -Stream $Stream -Object @{ ok = $true; name = $pname }
@@ -959,15 +1390,22 @@ function Start-Listener {
     param([int]$From, [int]$To, [int]$Fixed)
 
     $candidates = if ($Fixed -gt 0) { @($Fixed) } else { $From..$To }
-    foreach ($p in $candidates) {
-        try {
-            $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $p)
-            $l.Start()
-            return @{ Listener = $l; Port = $p }
-        } catch {
-            continue
+    # A fixed port is retried for a few seconds: after an update the previous
+    # copy of the launcher may still be letting go of it.
+    $tries = if ($Fixed -gt 0) { 10 } else { 1 }
+    for ($t = 0; $t -lt $tries; $t++) {
+        foreach ($p in $candidates) {
+            try {
+                $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $p)
+                $l.Start()
+                return @{ Listener = $l; Port = $p }
+            } catch {
+                continue
+            }
         }
+        if ($t -lt $tries - 1) { Start-Sleep -Milliseconds 500 }
     }
+    if ($Fixed -gt 0) { throw "Port $Fixed is in use. Close whatever is using it, or start without -Port." }
     throw "No free port in range $From-$To. Close whatever is using them, or pass -Port <n>."
 }
 
@@ -978,7 +1416,7 @@ $chosenRoot = $DefaultDataRoot
 $cfg = Read-Config
 $cfgRoot = [string](Get-Prop $cfg 'dataRoot')
 $script:LocalOnly = [bool](Get-Prop $cfg 'localOnly')
-if (-not [string]::IsNullOrWhiteSpace($DataRoot)) { $chosenRoot = $DataRoot }
+if (-not [string]::IsNullOrWhiteSpace($ForcedDataRoot)) { $chosenRoot = $ForcedDataRoot }
 elseif (-not [string]::IsNullOrWhiteSpace($cfgRoot)) {
     if (Test-Path -LiteralPath $cfgRoot -PathType Container) { $chosenRoot = $cfgRoot }
     else {
@@ -1009,7 +1447,25 @@ Write-Host ''
 Write-Host '   Every calculation is written to the data folder as a .json file.' -ForegroundColor DarkGray
 Write-Host '   Leave this window open while you work. Press Ctrl+C to stop.' -ForegroundColor DarkGray
 Write-Host ''
+
+# Is there a newer version? Asked once now (a few seconds at most, and never
+# fatal when offline); the Dashboard shows the answer and can install it.
+Write-Host "   Version         :  $script:AppVersion" -ForegroundColor Gray
+$check = Invoke-UpdateCheck -TimeoutMs 4000
+if ($check.available) {
+    Write-Host "   Update          :  version $($check.latest) is available - see the Dashboard to install it." -ForegroundColor Green
+} elseif ($check.error) {
+    Write-Host '   Update          :  could not check (offline?) - the Dashboard can try again.' -ForegroundColor DarkGray
+} else {
+    Write-Host '   Update          :  this is the latest version.' -ForegroundColor DarkGray
+}
+Write-Host ''
 Write-Host '  ----------------------------------------------------------------' -ForegroundColor DarkGray
+
+try { $Host.UI.RawUI.WindowTitle = "DPM FTE Calculator $script:AppVersion" } catch {}
+
+# An update staged a new launcher .cmd; the old one has finished by now.
+Install-StagedLauncher
 
 if (-not $NoBrowser) { Start-Process $url | Out-Null }
 
@@ -1074,9 +1530,30 @@ try {
             if ($stream) { try { $stream.Close() } catch {} }
             try { $client.Close() } catch {}
         }
+        if ($script:RestartRequested) { break }
     }
 } finally {
     try { $listener.Stop() } catch {}
     Write-Host ''
     Write-Host '  Server stopped.' -ForegroundColor Yellow
+}
+
+# After an update: start the new version of this script on the same port -
+# the browser keeps each person's data per address, so the port must not
+# change - and let this window close.
+if ($script:RestartRequested) {
+    Write-Host '  Starting the updated version...' -ForegroundColor Green
+    $args2 = @('-NoProfile', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'serve.ps1'),
+               '-Port', [string]$script:Bound, '-NoBrowser')
+    if ($ForcedDataRoot) { $args2 += @('-DataRoot', $ForcedDataRoot) }
+    if ($PSBoundParameters.ContainsKey('UpdateNotesUrl')) { $args2 += @('-UpdateNotesUrl', $UpdateNotesUrl) }
+    if ($PSBoundParameters.ContainsKey('UpdateZipUrl')) { $args2 += @('-UpdateZipUrl', $UpdateZipUrl) }
+    # Quoted for the command line. A backslash right before the closing quote
+    # would escape it ("C:\My Data\" becomes C:\My Data" plus the rest), so
+    # trailing backslashes are doubled.
+    $quoted = $args2 | ForEach-Object {
+        if ($_ -match '\s') { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' } else { $_ }
+    }
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $quoted -WorkingDirectory $AppRoot | Out-Null
+    exit 0
 }

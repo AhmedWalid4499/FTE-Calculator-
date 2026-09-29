@@ -119,9 +119,26 @@
   var IS_LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
   var CAN_REACH_HOST = (location.protocol === 'http:' || location.protocol === 'https:') && IS_LOOPBACK;
 
+  var APP_VERSION = global.FTEData.APP_VERSION;
+
+  /* Set when a save was refused because this copy of the app is too old for
+     the data folder (or this page is older than the launcher serving it). */
+  var _updateRequired = '';
+  var _updateFix = '';   // what fixes it - see updateProblem()
+  function setUpdateRequired(message, fix) {
+    if (_updateRequired === (message || '') && _updateFix === (fix || '')) return;
+    _updateRequired = message || '';
+    _updateFix = message ? (fix || '') : '';
+    emitStatus();
+  }
+
   function api(path, options) {
     if (!CAN_REACH_HOST) return Promise.reject(new Error('no local host on this origin'));
-    var opts = Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {});
+    var opts = Object.assign({}, options || {});
+    /* Every request says which version of the page sent it; the launcher
+       refuses changes from a page that is not its own version. */
+    opts.headers = Object.assign({ 'Content-Type': 'application/json' }, (options && options.headers) || {},
+                                 { 'X-FTE-Version': APP_VERSION });
     return fetch(path, opts).then(function (res) {
       /* The host explains its refusals ("that folder does not exist"), so a
          failure carries the server's own message rather than just a code. */
@@ -129,6 +146,11 @@
         if (!res.ok) {
           var err = new Error((body && body.error) || ('HTTP ' + res.status));
           err.status = res.status;
+          if (res.status === 426) {
+            /* The refusal says why; the health report says what fixes it. */
+            setUpdateRequired(err.message, '');
+            probeServer();
+          }
           throw err;
         }
         return body;
@@ -142,7 +164,12 @@
       return Promise.resolve(false);
     }
     return api('/api/health')
-      .then(function (info) { _serverOnline = true; _serverInfo = info; emitStatus(); return true; })
+      .then(function (info) {
+        _serverOnline = true; _serverInfo = info;
+        _updateRequired = ''; _updateFix = '';   // the health report now says whether an update is needed
+        emitStatus();
+        return true;
+      })
       .catch(function () { _serverOnline = false; _serverInfo = null; emitStatus(); return false; });
   }
 
@@ -167,6 +194,75 @@
     }).catch(function () { return false; });
   }
 
+  /* fte-folder.json in the connected folder records the oldest app version
+     allowed to write there (the launcher keeps the same file). A copy older
+     than that refuses to save rather than write the folder the old way; a
+     newer copy raises it when its own minimum is higher. Read at most once a
+     minute. A marker that is there but cannot be read (half-synced,
+     hand-edited) fails closed: nothing is saved and it is never overwritten. */
+  var MARKER = 'fte-folder.json';
+  var _folderNeeds = '';
+  var _markerState = 'absent';   // 'absent' | 'ok' | 'unreadable'
+  var _markerReadAt = 0;
+  var cmpVersion = global.FTEData.compareVersions;
+
+  function readFolderMarker() {
+    return _dirHandle.getFileHandle(MARKER)
+      .then(function (h) { return h.getFile(); })
+      .then(function (f) { return f.text(); })
+      .then(function (t) {
+        var m = null;
+        try { m = JSON.parse(String(t).replace(/^﻿/, '')); } catch (e) { /* unreadable */ }
+        var v = m && typeof m.minVersion === 'string' ? m.minVersion : '';
+        return v ? { state: 'ok', minVersion: v } : { state: 'unreadable', minVersion: '' };
+      }, function (e) {
+        return { state: e && e.name === 'NotFoundError' ? 'absent' : 'unreadable', minVersion: '' };
+      });
+  }
+
+  function writeFolderMarker() {
+    var marker = {
+      app: 'DPM FTE Calculator',
+      about: 'The oldest version of the app allowed to save into this folder. Older copies must be updated first.',
+      layout: 'project folders',
+      minVersion: global.FTEData.FOLDER_MIN_VERSION,
+      writtenBy: APP_VERSION,
+      updatedAt: new Date().toISOString()
+    };
+    return _dirHandle.getFileHandle(MARKER, { create: true })
+      .then(function (h) { return h.createWritable(); })
+      .then(function (w) { return w.write(JSON.stringify(marker, null, 2)).then(function () { return w.close(); }); })
+      .then(function () { _folderNeeds = marker.minVersion; _markerState = 'ok'; })
+      .catch(function () { /* read-only folder: the check still applies */ });
+  }
+
+  function refuseWrite(msg, fix) {
+    setUpdateRequired(msg, fix);
+    var err = new Error(msg);
+    err.status = 426;
+    throw err;
+  }
+
+  /** Resolves when this copy may write to the connected folder; rejects (status 426) when it is too old. */
+  function ensureFolderWritable() {
+    if (!_folderReady || !_dirHandle) return Promise.resolve();
+    var read = (Date.now() - _markerReadAt < 60000) ? Promise.resolve()
+      : readFolderMarker().then(function (m) { _markerReadAt = Date.now(); _markerState = m.state; _folderNeeds = m.minVersion; });
+    return read.then(function () {
+      if (_markerState === 'unreadable') {
+        _markerReadAt = 0;   // look again next time - it may just be mid-sync
+        refuseWrite("The folder's " + MARKER + ' cannot be read (still syncing?), so nothing is saved for now. ' +
+                    'Try again in a moment; if it persists, fix or delete that file.', 'wait');
+      }
+      if (_folderNeeds && cmpVersion(_folderNeeds, APP_VERSION) > 0) {
+        refuseWrite('This folder needs version ' + _folderNeeds + ' or later of the app - this copy is ' + APP_VERSION +
+                    '. Update (reload the website, or update the launcher), then try again.', 'update');
+      }
+      setUpdateRequired('');
+      if (!_folderNeeds || cmpVersion(_folderNeeds, global.FTEData.FOLDER_MIN_VERSION) < 0) return writeFolderMarker();
+    });
+  }
+
   /** Ask the user for a folder. Must be called from a click. */
   function connectFolder() {
     if (!FOLDER_SUPPORTED) {
@@ -179,9 +275,11 @@
           _dirHandle = handle;
           _folderName = handle.name;
           _folderReady = true;
+          resetMarker();
           return saveHandle(handle, handle.name);
         });
       })
+      .then(function () { return ensureFolderWritable().catch(function () {}); })
       .then(function () { return flushPending(); })
       .then(function (n) {
         /* A shared folder already holds colleagues' estimates - read them in. */
@@ -192,8 +290,15 @@
       });
   }
 
+  /* A different folder (or none): what the last one needed no longer applies. */
+  function resetMarker() {
+    _markerReadAt = 0; _folderNeeds = ''; _markerState = 'absent';
+    _updateRequired = ''; _updateFix = '';
+  }
+
   function forgetFolder() {
     _dirHandle = null; _folderName = null; _folderReady = false;
+    resetMarker();
     return delLocal(STORE_HANDLES, 'dataFolder').then(function () { emitStatus(); });
   }
 
@@ -208,8 +313,9 @@
       _folderName = row.name || row.handle.name;
       return verifyPermission(row.handle, false).then(function (ok) {
         _folderReady = ok;
+        resetMarker();
         emitStatus();
-        return ok;
+        return ok ? ensureFolderWritable().then(function () { return ok; }, function () { return ok; }) : ok;
       });
     }).catch(function () { return false; });
   }
@@ -231,7 +337,8 @@
 
   function writeToFolder(subdir, filename, text) {
     if (!_folderReady || !_dirHandle) return Promise.reject(new Error('no folder connected'));
-    return _dirHandle.getDirectoryHandle(subdir, { create: true })
+    return ensureFolderWritable()
+      .then(function () { return _dirHandle.getDirectoryHandle(subdir, { create: true }); })
       .then(function (dir) { return dir.getFileHandle(filename, { create: true }); })
       .then(function (file) { return file.createWritable(); })
       .then(function (writable) {
@@ -253,9 +360,11 @@
 
   function deleteFromFolder(subdir, filename) {
     if (!_folderReady || !_dirHandle) return Promise.resolve();
-    return _dirHandle.getDirectoryHandle(subdir, { create: false })
-      .then(function (dir) { return dir.removeEntry(filename); })
-      .catch(function () { /* already gone, or folder never created */ });
+    return ensureFolderWritable().then(function () {
+      return _dirHandle.getDirectoryHandle(subdir, { create: false })
+        .then(function (dir) { return dir.removeEntry(filename); })
+        .catch(function () { /* already gone, or folder never created */ });
+    });
   }
 
   /* Read every JSON file in a sub-folder of the connected folder. This is how
@@ -394,11 +503,14 @@
   /* Remove every copy of an estimate - its project folder, the old records/
      folder, conflict copies - or the next read brings it back. */
   function deleteRecordFromFolder(id) {
-    return copiesInFolder(id).then(function (copies) {
-      return copies.reduce(function (chain, c) {
-        return chain.then(function () { return c.dir.removeEntry(c.name).catch(function () {}); });
-      }, Promise.resolve());
-    }).catch(function () {});
+    /* Refused (rejects) when this copy is too old for the folder. */
+    return ensureFolderWritable().then(function () {
+      return copiesInFolder(id).then(function (copies) {
+        return copies.reduce(function (chain, c) {
+          return chain.then(function () { return c.dir.removeEntry(c.name).catch(function () {}); });
+        }, Promise.resolve());
+      }).catch(function () {});
+    });
   }
 
   function toBase64(bytes) {
@@ -541,6 +653,7 @@
   }
 
   function status() {
+    var problem = updateProblem();
     return {
       mode: mode(),
       serverOnline: _serverOnline,
@@ -555,8 +668,65 @@
       folderName: _folderName,
       folderReady: _folderReady,
       folderNeedsReconnect: !!(_dirHandle && !_folderReady),
-      isSecureContext: global.isSecureContext === true
+      isSecureContext: global.isSecureContext === true,
+      /* Versions: the launcher's (host mode), and the oldest the data folder
+         accepts. A page that differs from its launcher, or is older than the
+         folder allows, cannot save until it is reloaded or updated. */
+      hostVersion: _serverInfo ? (_serverInfo.version || '') : '',
+      folderNeeds: _serverOnline ? ((_serverInfo && _serverInfo.folderNeeds) || '') : (_folderReady ? _folderNeeds : ''),
+      updateRequired: problem ? problem.message : '',
+      updateFix: problem ? problem.fix : ''
     };
+  }
+
+  /* Why saving is blocked, and what fixes it:
+       'reload'  - the launcher is newer than this page
+       'restart' - the app's files are newer than the launcher window running them
+       'update'  - the data folder needs a newer version of the app
+       'wait'    - the folder's version file cannot be read right now
+     or null when nothing is wrong. */
+  function updateProblem() {
+    var s = _serverOnline && _serverInfo;
+    if (s) {
+      if (s.staleLauncher) return { message: s.staleLauncher, fix: 'restart' };
+      var c = s.version ? cmpVersion(s.version, APP_VERSION) : 0;
+      if (c > 0) {
+        return { message: 'The app was updated to version ' + s.version + ' while this page was open. Reload the page to use it.', fix: 'reload' };
+      }
+      if (c < 0) {
+        return { message: 'This page is version ' + APP_VERSION + ' but the launcher window is still running ' + s.version +
+                 ". Close the launcher window and start 'Start FTE Calculator.cmd' again.", fix: 'restart' };
+      }
+      if (s.folderMarker === 'unreadable') {
+        return { message: "The data folder's " + MARKER + ' cannot be read (still syncing?), so nothing is saved for now. ' +
+                 'Try again in a moment; if it persists, fix or delete that file.', fix: 'wait' };
+      }
+      if (s.folderNeeds && cmpVersion(s.folderNeeds, APP_VERSION) > 0) {
+        return { message: 'The data folder needs version ' + s.folderNeeds + ' or later of the app - this copy is ' + APP_VERSION + '. Update it to keep saving.', fix: 'update' };
+      }
+    }
+    /* A save the launcher or the folder refused since the last check. */
+    return _updateRequired ? { message: _updateRequired, fix: _updateFix } : null;
+  }
+
+  /* ---------------------------------------------------------- updates ---- */
+
+  /* The launcher's view of updates (host mode only). */
+  function updateStatus() { return api('/api/update/status'); }
+  function updateCheck() { return api('/api/update/check', { method: 'POST', body: '{}' }); }
+  function updateInstall() { return api('/api/update/install', { method: 'POST', body: '{}' }); }
+
+  /* After an install the launcher restarts; resolves true once the new
+     version answers, false if it has not within `timeoutMs`. */
+  function waitForHostVersion(version, timeoutMs) {
+    var until = Date.now() + (timeoutMs || 90000);
+    function poll() {
+      return new Promise(function (r) { setTimeout(r, 1500); })
+        .then(function () { return fetch('/api/health', { cache: 'no-store' }).then(function (res) { return res.json(); }); })
+        .then(function (info) { return info && info.version === version; }, function () { return false; })
+        .then(function (ok) { return ok ? true : (Date.now() > until ? false : poll()); });
+    }
+    return poll();
   }
 
   /* ---------------------------------------------------------- records ---- */
@@ -737,7 +907,10 @@
             .then(function () { return { onDisk: true }; },
                   function () { return addTombstone(id, meta).then(function () { return { onDisk: false }; }); });
         }
-        if (_folderReady) return deleteRecordFromFolder(id).then(function () { return { onDisk: true }; });
+        if (_folderReady) {
+          return deleteRecordFromFolder(id).then(function () { return { onDisk: true }; },
+            function () { return addTombstone(id, meta).then(function () { return { onDisk: false }; }); });
+        }
         /* A disk backend exists but is unreachable right now. */
         if (CAN_REACH_HOST || _dirHandle) return addTombstone(id, meta).then(function () { return { onDisk: false }; });
         return { onDisk: false };
@@ -1005,7 +1178,7 @@
         return !(by && me && by !== me);
       });
       return mine.reduce(function (chain, p) {
-        return chain.then(function (n) { return saveProject(p).then(function () { return n + 1; }); });
+        return chain.then(function (n) { return writeProject(p).then(function (ok) { return ok ? n + 1 : n; }); });
       }, Promise.resolve(0));
     }).catch(function () { return 0; });
   }
@@ -1030,17 +1203,18 @@
     return String(name || 'project').replace(/[^A-Za-z0-9 \-_.]/g, '_').slice(0, 100) || 'project';
   }
 
+  /* Resolves true when the project reached the data folder. */
+  function writeProject(project) {
+    var body = JSON.stringify(project, null, 2);
+    var done = function () { return true; }, failed = function () { return false; };
+    if (_serverOnline) return api('/api/projects', { method: 'POST', body: body }).then(done, failed);
+    if (_folderReady) return writeToFolder('projects', safeFileName(project.name) + '.json', body).then(done, failed);
+    return Promise.resolve(false);
+  }
+
   function saveProject(project) {
     return putLocal(STORE_PROJECTS, project)
-      .then(function () {
-        var body = JSON.stringify(project, null, 2);
-        if (_serverOnline) {
-          return api('/api/projects', { method: 'POST', body: body }).catch(function () {});
-        }
-        if (_folderReady) {
-          return writeToFolder('projects', safeFileName(project.name) + '.json', body).catch(function () {});
-        }
-      })
+      .then(function () { return writeProject(project); })
       .then(function () { return project; });
   }
 
@@ -1058,7 +1232,7 @@
       if (_serverOnline) {
         return api('/api/projects/' + encodeURIComponent(name), { method: 'DELETE' }).catch(function () {});
       }
-      if (_folderReady) return deleteFromFolder('projects', safeFileName(name) + '.json');
+      if (_folderReady) return deleteFromFolder('projects', safeFileName(name) + '.json').catch(function () {});
     });
   }
 
@@ -1216,6 +1390,11 @@
     organiseLegacyRecords: organiseLegacyRecords,
     listProjectFiles: listProjectFiles,
     onRecordsChanged: onRecordsChanged,
+    updateStatus: updateStatus,
+    updateCheck: updateCheck,
+    updateInstall: updateInstall,
+    waitForHostVersion: waitForHostVersion,
+    checkFolderVersion: function () { return ensureFolderWritable().then(function () { return true; }, function () { return false; }); },
 
     saveProject: saveProject,
     listProjects: listProjects,

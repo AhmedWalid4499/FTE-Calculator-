@@ -5,7 +5,21 @@
 (function (global) {
   'use strict';
 
-  var APP_VERSION = '2.1.0';
+  /* The version lives in release-notes.js, loaded just before this file. */
+  var RELEASES = global.FTE_RELEASES || { version: '0.0.0', releases: [] };
+  var APP_VERSION = RELEASES.version;
+  /* The oldest version allowed to write into a data folder this one writes to. */
+  var FOLDER_MIN_VERSION = RELEASES.folderMinVersion || APP_VERSION;
+
+  /** -1, 0 or 1, comparing "2.10.0" with "2.9.1" part by part as numbers. */
+  function compareVersions(a, b) {
+    var pa = String(a || '0').split('.'), pb = String(b || '0').split('.');
+    for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
+      var x = parseInt(pa[i], 10) || 0, y = parseInt(pb[i], 10) || 0;
+      if (x !== y) return x > y ? 1 : -1;
+    }
+    return 0;
+  }
 
   /* --------------------------------------------------------------- WAN --- */
 
@@ -339,6 +353,9 @@
 
   global.FTEData = {
     APP_VERSION: APP_VERSION,
+    RELEASES: RELEASES,
+    FOLDER_MIN_VERSION: FOLDER_MIN_VERSION,
+    compareVersions: compareVersions,
     setDpms: setDpms,
     seedDpms: seedDpms,
     PRODUCTS: PRODUCTS,

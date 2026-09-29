@@ -130,6 +130,7 @@
       });
     }
     if (el('page-settings').classList.contains('active')) renderSettingsPage();
+    renderUpdates();   // "update required" follows the storage status
   }
 
   function renderResultChip(record) {
@@ -1246,7 +1247,10 @@
         S.records = rows;
         renderDashboard();
         if (!res.written) {
-          U.toast('Calculation saved in this browser. It will be written to the data folder when the app host is running.', 'warn');
+          var needsUpdate = DB.status().updateRequired;
+          U.toast(needsUpdate
+            ? 'Calculation kept in this browser only — this copy of the app must be updated before it can save to the data folder (see the Dashboard).'
+            : 'Calculation saved in this browser. It will be written to the data folder when the app host is running.', 'warn');
           return;
         }
         /* The estimate is on disk; now the project's workbook beside it. */
@@ -2727,7 +2731,9 @@
     if (autoLinking) return autoLinking;   // focus events can arrive while a check is running
     autoLinking = checkTeamFolder().then(function () {
       var st = DB.status();
-      if (onTeamFolder() || !st.isDefaultRoot || st.localOnly || st.missingRoot) { renderStorageStatus(); return; }
+      teamCopyArmed = true;
+      if (onTeamFolder()) { renderStorageStatus(); resumeTeamCopy(); return; }
+      if (!st.isDefaultRoot || st.localOnly || st.missingRoot) { renderStorageStatus(); return; }
       var best = verifiedTeamCandidate();
       if (!best) { renderStorageStatus(); return; }
       return linkTeamFolder(best.path);
@@ -2735,16 +2741,54 @@
     return autoLinking;
   }
 
+  /* This person's own earlier estimates and projects, copied into the team
+     folder - chosen here in the browser by who created them, so a colleague's
+     estimate sitting in the old folder is never published. The request is
+     remembered (TEAM_COPY_KEY) until a copy runs while saving is allowed, so a
+     link made while the folder refused writes still brings them along later. */
+  var TEAM_COPY_KEY = 'dpm_team_copy_pending';
+  var teamCopying = null;
+  var teamCopyArmed = false;   // set once start-up knows who is using the app
+
+  function copyMineToTeam() {
+    if (teamCopying) return teamCopying;
+    teamCopying = Promise.all([
+      DB.publishLocal(S.me.email).catch(function () { return 0; }),
+      DB.publishLocalProjects(S.me.email)
+    ]).then(function (n) {
+      teamCopying = null;
+      if (!DB.status().updateRequired) lsSet(TEAM_COPY_KEY, '');
+      return n;
+    }, function (err) { teamCopying = null; throw err; });
+    return teamCopying;
+  }
+
+  function resumeTeamCopy() {
+    var st = DB.status();
+    if (!teamCopyArmed || teamCopying || st.mode !== 'host' || st.updateRequired ||
+        !lsGet(TEAM_COPY_KEY) || !onTeamFolder()) return;
+    copyMineToTeam().then(function (n) {
+      if (n[0] || n[1]) {
+        return afterDataRootChange(n[0] + ' of your earlier estimate(s) and ' + n[1] + ' project(s) copied into the team folder “' + TF.name + '”.');
+      }
+    }).catch(function () { /* tried again at the next start */ });
+  }
+
   /* Switch to the team folder, then bring along this person's own estimates
-     and projects - chosen here in the browser by who created them, so a
-     colleague's estimate sitting in the old folder is never published. */
+     and projects. */
   function linkTeamFolder(path) {
     return DB.setHostDataRoot(path, false).then(function (out) {
       S.pendingRoot = null;
-      return Promise.all([
-        DB.publishLocal(S.me.email).catch(function () { return 0; }),
-        DB.publishLocalProjects(S.me.email)
-      ]).then(function (n) {
+      /* A folder that needs a newer app refuses every write: say so instead
+         of reporting "0 copied". The copy is remembered and made as soon as
+         saving there works (resumeTeamCopy). */
+      lsSet(TEAM_COPY_KEY, '1');
+      var blocked = DB.status().updateRequired;
+      if (blocked) {
+        return afterDataRootChange('Linked to the SharePoint team folder “' + TF.name + '”, but nothing can be saved there yet: ' +
+          blocked + ' Your earlier estimates will be copied in once it can.', 'warn');
+      }
+      return copyMineToTeam().then(function (n) {
         return afterDataRootChange('Linked to the SharePoint team folder “' + TF.name + '”. Every estimate is now saved there and ' +
           'uploaded by OneDrive' + (n[0] || n[1]
             ? ' — ' + n[0] + ' of your earlier estimate(s) and ' + n[1] + ' project(s) copied in.' : '.'));
@@ -3029,6 +3073,7 @@
          the next start must not undo it. */
       return DB.setHostDataRoot(null, false, { localOnly: true }).then(function (out) {
         S.pendingRoot = null;
+        lsSet(TEAM_COPY_KEY, '');
         return afterDataRootChange('Now saving to ' + out.dataRoot + ' only.');
       });
     }).catch(function (err) {
@@ -3342,6 +3387,287 @@
     }
   }
 
+  /* ============================================================ updates == */
+
+  /* The panel at the top of the Dashboard: what this version added, whether
+     a newer one exists, and the button that installs it (launcher), reloads
+     the page (website) or points to the new file (single-file copy). */
+  var UP = global.FTEUpdates;
+  S.update = { state: 'idle', latest: '', releases: [], action: '', error: '', checkedAt: null, installing: false };
+
+  function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private window */ } }
+
+  function currentRelease() {
+    return (D.RELEASES.releases || []).filter(function (r) { return r.version === D.APP_VERSION; })[0] ||
+           { version: D.APP_VERSION, title: '', features: [] };
+  }
+
+  /* manual: the person asked (toasts the answer). force: ask GitHub now
+     rather than take the launcher's remembered answer. */
+  function checkForUpdates(manual, force) {
+    if (S.update.state === 'checking' || S.update.installing) return Promise.resolve();
+    var st = DB.status();
+    var check;
+    if (st.mode === 'host') {
+      /* The launcher checks GitHub and remembers the answer; when it last
+         asked is its time, not this page's. */
+      check = (manual || force ? DB.updateCheck() : DB.updateStatus()).then(function (i) {
+        return { latest: i.latest, available: !!i.available, releases: i.releases || [], error: i.error || '',
+                 action: i.installMode === 'git' ? 'git' : 'install', checkedAt: i.checkedAt };
+      });
+    } else if (location.protocol === 'file:') {
+      check = UP.checkGitHub(D.APP_VERSION);
+    } else if (st.canReachHost) {
+      check = Promise.reject(new Error('the launcher (Start FTE Calculator.cmd) is not running'));
+    } else {
+      check = UP.checkWebsite(D.APP_VERSION);
+    }
+    S.update.state = 'checking';
+    renderUpdates();
+    var when = null;
+    return check.then(function (r) {
+      if (r.checkedAt && !isNaN(new Date(r.checkedAt).getTime())) when = new Date(r.checkedAt);
+      S.update.latest = r.latest || '';
+      S.update.releases = r.releases || [];
+      S.update.action = r.action;
+      S.update.error = r.error || '';
+      S.update.state = r.error ? 'error' : (r.available ? 'available' : 'current');
+      if (manual && !r.error) {
+        U.toast(r.available ? 'Version ' + r.latest + ' is available — see the Dashboard.' : 'You have the latest version (' + D.APP_VERSION + ').',
+                r.available ? 'info' : 'ok');
+      }
+    }, function (err) {
+      S.update.state = 'error';
+      S.update.error = 'Could not check for updates: ' + errorText(err) + '.';
+      if (manual) U.toast(S.update.error, 'warn');
+    }).then(function () {
+      S.update.checkedAt = when || new Date();
+      renderUpdates();
+    });
+  }
+
+  /* Reload with fresh copies of the app's files. A plain reload may take
+     scripts from the browser's cache and come back as the old version. */
+  function hardReload() {
+    var urls = [global.location.href.split('#')[0]];
+    Array.prototype.forEach.call(document.querySelectorAll('script[src], link[rel="stylesheet"][href]'), function (n) {
+      var u = n.src || n.href;
+      if (u && u.indexOf(global.location.origin) === 0) urls.push(u);
+    });
+    var refresh = Promise.all(urls.map(function (u) {
+      return fetch(u, { cache: 'reload' }).catch(function () { /* reload anyway */ });
+    }));
+    var cap = new Promise(function (r) { setTimeout(r, 8000); });
+    Promise.race([refresh, cap]).then(function () { global.location.reload(); });
+  }
+
+  function installUpdate() {
+    var u = S.update;
+    if (u.installing) return;
+    if (u.action === 'reload') { u.installing = 'reload'; renderUpdates(); hardReload(); return; }
+    if (u.action === 'download') { global.open(UP.WEBSITE, '_blank', 'noopener'); return; }
+    var news = (u.releases || []).map(function (r) {
+      return '<b>' + esc(r.version) + '</b> — ' + esc(r.title || '');
+    }).join('<br>');
+    U.dialog({
+      title: 'Install version ' + u.latest + '?',
+      confirmLabel: 'Update now',
+      bodyHtml:
+        (news ? '<p>' + news + '</p>' : '') +
+        (u.action === 'git'
+          ? '<p>This copy is a git working folder, so it is updated with <span class="code">git pull</span> — only if it has no local changes. ' +
+            'The version you have now stays in git\'s history.</p>' +
+            '<p>Your estimates, settings, DPM directory and data folder are not touched.</p>'
+          : '<p>The app downloads the update from GitHub, installs it and restarts, which takes a few seconds.</p>' +
+            '<p>Your estimates, settings, DPM directory and data folder are not touched. The version you have now is kept in the ' +
+            '<span class="code">backup</span> folder next to the app.</p>')
+    }).then(function (yes) {
+      if (yes !== true || S.update.installing) return;
+      S.update.installing = true;
+      renderUpdates();
+      return DB.updateInstall().then(function (res) {
+        if (!res || !res.to || D.compareVersions(res.to, D.APP_VERSION) <= 0) {
+          throw new Error('The update did not install a newer version' + (res && res.to ? ' (still ' + res.to + ')' : '') + '.');
+        }
+        U.toast('Version ' + res.to + ' installed — restarting…', 'info');
+        return DB.waitForHostVersion(res.to, 90000).then(function (back) {
+          if (back) {
+            lsSet('dpm_updated_to', res.to);
+            hardReload();
+            return;
+          }
+          S.update.installing = false;
+          S.update.state = 'error';
+          S.update.error = 'Version ' + res.to + ' was installed, but the app did not restart by itself. ' +
+                           'Close its window and start it again with Start FTE Calculator.cmd.';
+          renderUpdates();
+        });
+      }).catch(function (err) {
+        S.update.installing = false;
+        renderUpdates();
+        U.toast(errorText(err), 'err');
+      });
+    });
+  }
+
+  function releaseBlock(r, heading) {
+    return '<div class="release-block"><h4>' + esc(heading || ('Version ' + r.version)) +
+      (r.title ? ' — ' + esc(r.title) : '') + (r.date ? ' <span class="release-date">' + esc(fmt.date(r.date)) + '</span>' : '') +
+      '</h4><ul class="updates-list">' + (r.features || []).map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') +
+      '</ul></div>';
+  }
+
+  function showAllReleases() {
+    U.dialog({
+      title: 'All updates',
+      confirmLabel: 'Close',
+      hideCancel: true,
+      bodyHtml: (D.RELEASES.releases || []).map(function (r) { return releaseBlock(r); }).join('')
+    });
+    var box = qs('.dlg');
+    if (box) box.classList.add('wide');
+  }
+
+  function renderUpdates() {
+    var host = el('dash-updates');
+    var chip = el('update-chip');
+    if (!host) return;
+    var st = DB.status(), u = S.update, cur = currentRelease();
+    var required = st.updateRequired, fix = st.updateFix;
+    var busy = u.installing ? ' disabled' : '';
+
+    /* The folder may need a version that has not been published yet (someone
+       ran a newer copy against it): updating cannot help, only waiting. */
+    var unpublished = fix === 'update' && st.folderNeeds && (u.state === 'available' || u.state === 'current') &&
+                      D.compareVersions(u.latest || D.APP_VERSION, st.folderNeeds) < 0;
+    /* Only say so on a fresh answer: right after a release, a check from
+       before it would claim the new version does not exist. */
+    if (unpublished && !u.installing && (!u.checkedAt || Date.now() - u.checkedAt.getTime() > 60 * 1000)) {
+      unpublished = false;
+      setTimeout(function () { checkForUpdates(false, true); }, 0);
+    }
+
+    /* Top-bar chip, on every page. */
+    if (chip) {
+      var showChip = !!required || u.state === 'available';
+      chip.classList.toggle('hidden', !showChip);
+      chip.classList.toggle('required', !!required);
+      el('update-chip-text').textContent = !required ? ('Version ' + u.latest + ' available')
+        : fix === 'reload' ? 'Reload needed' : fix === 'restart' ? 'Restart needed' : fix === 'wait' ? 'Saving paused' : 'Update required';
+    }
+
+    var html = '<div class="card updates-card' + (required ? ' required' : (u.state === 'available' ? ' available' : '')) + '">';
+
+    if (required) {
+      var heading = { reload: 'Reload needed.', restart: 'Restart the launcher.', wait: 'Saving paused.' }[fix] || 'Update required.';
+      var text = unpublished
+        ? 'The data folder needs version ' + st.folderNeeds + ' or later of the app, which is not published yet (the newest is ' +
+          (u.latest || D.APP_VERSION) + '). Nothing can be saved there until it is — ask whoever maintains the app to publish it.'
+        : required;
+      var button = '';
+      if (fix === 'reload') button = '<button class="btn btn-primary btn-sm" data-upd="reload"' + busy + '>Reload the page</button>';
+      else if (fix === 'update' && !unpublished) {
+        button = st.mode === 'host'
+          ? '<button class="btn btn-primary btn-sm" data-upd="check-install"' + busy + '>' + (u.installing ? 'Installing…' : 'Update now') + '</button>'
+          : '<button class="btn btn-primary btn-sm" data-upd="reload"' + busy + '>Reload the page</button>';
+      } else if (fix !== 'restart') {
+        button = '<button class="btn btn-ghost btn-sm" data-upd="check"' + (u.state === 'checking' ? ' disabled' : busy) + '>Check again</button>';
+      }
+      html += '<div class="callout err"><span class="callout-ic">⚠</span><span><b>' + heading + '</b> ' +
+        esc(text) + '</span></div>' + (button ? '<div class="btn-row mb-3">' + button + '</div>' : '');
+    }
+
+    if (u.state === 'available') {
+      var how = {
+        install: 'Installing takes a few seconds: the app restarts, and your estimates and settings are kept.',
+        git: 'This copy is a git working folder: it is updated with git pull, only if it has no local changes.',
+        reload: 'A newer version of the website has been published — reload the page to use it.',
+        download: 'This single-file copy cannot update itself: use the website, or ask for the new file.'
+      }[u.action] || '';
+      var label = { install: 'Update now', git: 'Update now', reload: 'Reload to update', download: 'Open the website' }[u.action] || 'Update';
+      html += '<div class="updates-head"><div>' +
+          '<div class="updates-title">⬆ Update available — version ' + esc(u.latest) + '</div>' +
+          '<div class="updates-sub">You have version ' + esc(D.APP_VERSION) + '. ' + esc(how) + '</div></div>' +
+          '<div class="btn-row">' +
+            '<button class="btn btn-primary btn-sm" data-upd="install"' + busy + '>' +
+              (u.installing ? (u.installing === 'reload' ? 'Reloading…' : 'Installing…') : esc(label)) + '</button>' +
+            '<button class="btn btn-ghost btn-sm" data-upd="check"' + (u.installing ? ' disabled' : '') + '>Check again</button>' +
+          '</div></div>' +
+        (u.releases || []).map(function (r) { return releaseBlock(r, 'New in ' + r.version); }).join('');
+    } else {
+      var seen = lsGet('dpm_seen_release') === D.APP_VERSION;
+      html += '<div class="updates-head"><div>' +
+          '<div class="updates-title">✨ What\'s new in version ' + esc(D.APP_VERSION) +
+            (seen ? '' : ' <span class="tag tag-info">new</span>') + '</div>' +
+          '<div class="updates-sub">' + esc(cur.title || '') + (cur.date ? ' · released ' + esc(fmt.date(cur.date)) : '') + '</div></div>' +
+          '<div class="btn-row">' +
+            '<button class="btn btn-outline btn-sm" data-upd="check"' + (u.state === 'checking' ? ' disabled' : busy) + '>' +
+              (u.state === 'checking' ? 'Checking…' : '↻ Check for updates') + '</button>' +
+          '</div></div>';
+      if (!seen) {
+        html += '<ul class="updates-list">' + (cur.features || []).map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('') + '</ul>';
+      }
+    }
+
+    var status;
+    if (u.installing) status = u.installing === 'reload' ? 'Reloading with the latest files…' : 'Installing the update…';
+    else if (u.state === 'checking') status = 'Checking for updates…';
+    else if (u.state === 'current') status = '✓ You have the latest version.';
+    else if (u.state === 'available') status = 'Version ' + D.APP_VERSION + ' installed · ' + u.latest + ' available.';
+    else if (u.state === 'error') status = '⚠ ' + u.error;
+    else status = 'Version ' + D.APP_VERSION + '.';
+    if (u.checkedAt && u.state !== 'checking') {
+      status += ' Last checked ' + u.checkedAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + '.';
+    }
+    var seenNow = lsGet('dpm_seen_release') === D.APP_VERSION;
+    html += '<div class="updates-status"><span>' + esc(status) + '</span><span class="grow"></span>' +
+      (u.state !== 'available' && !seenNow ? '<button class="btn btn-ghost btn-sm" data-upd="seen">Got it</button>' : '') +
+      (u.state !== 'available' && seenNow ? '<button class="btn btn-ghost btn-sm" data-upd="whatsnew">What\'s new</button>' : '') +
+      '<button class="btn btn-ghost btn-sm" data-upd="history">All updates</button></div>';
+    html += '</div>';
+    host.innerHTML = html;
+  }
+
+  function handleUpdateAction(action) {
+    if (S.update.installing && /^(check|install|reload|check-install)$/.test(action)) return;
+    if (action === 'check') {
+      /* A blocked save is re-tested too: the folder may have finished syncing. */
+      var st = DB.status();
+      var again = !st.updateRequired ? Promise.resolve()
+        : st.mode === 'host' ? DB.probeServer() : DB.checkFolderVersion();
+      again.then(function () { renderUpdates(); return checkForUpdates(true); });
+      return;
+    }
+    if (action === 'install') { installUpdate(); return; }
+    if (action === 'reload') { S.update.installing = 'reload'; renderUpdates(); hardReload(); return; }
+    if (action === 'check-install') {
+      checkForUpdates(true).then(function () { if (S.update.state === 'available') installUpdate(); });
+      return;
+    }
+    if (action === 'seen') { lsSet('dpm_seen_release', D.APP_VERSION); renderUpdates(); return; }
+    if (action === 'whatsnew') { lsSet('dpm_seen_release', ''); renderUpdates(); return; }
+    if (action === 'history') showAllReleases();
+  }
+
+  /* Checked shortly after start, every 30 minutes, and when the window comes
+     back after 10 minutes away. */
+  function scheduleUpdateChecks() {
+    setTimeout(function () { checkForUpdates(false); }, 1500);
+    setInterval(function () { checkForUpdates(false); }, 30 * 60 * 1000);
+    global.addEventListener('focus', function () {
+      if (!S.update.checkedAt || Date.now() - S.update.checkedAt.getTime() > 10 * 60 * 1000) checkForUpdates(false);
+    });
+    var updatedTo = lsGet('dpm_updated_to');
+    if (updatedTo) {
+      lsSet('dpm_updated_to', '');
+      if (updatedTo === D.APP_VERSION) {
+        lsSet('dpm_seen_release', '');   // show what the update added
+        U.toast('Updated to version ' + D.APP_VERSION + ' — see what\'s new on the Dashboard.', 'ok');
+      }
+    }
+  }
+
   /* ============================================================== modes == */
 
   function syncModeUi(side) {
@@ -3466,6 +3792,9 @@
         }
         return;
       }
+
+      var updAct = e.target.closest('[data-upd]');
+      if (updAct) { e.preventDefault(); handleUpdateAction(updAct.dataset.upd); return; }
 
       var storageAct = e.target.closest('[data-storage-act]');
       if (storageAct) { handleStorageAction(storageAct.dataset.storageAct, storageAct); return; }
@@ -3710,7 +4039,9 @@
     renderDpmDirectory();
 
     DB.onStatusChange(renderStorageStatus);
+    DB.onStatusChange(function () { resumeTeamCopy(); });   // e.g. the folder's version file finished syncing
     DB.onRecordsChanged(onRecordsChanged);
+    renderUpdates();
 
     DB.init()
       .then(function () { return DB.getSettings(); })
@@ -3734,6 +4065,7 @@
            replaced the seed that was shown a moment ago. */
         renderDpmDirectory();
         if (S.records.length) renderResultChip(S.records[0]);
+        scheduleUpdateChecks();
       })
       .catch(function (err) {
         console.error(err);

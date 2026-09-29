@@ -660,6 +660,28 @@ details.fold { margin-top: var(--sp-3); font-size: .8rem; color: var(--text-3); 
 details.fold summary { cursor: pointer; font-weight: 600; color: var(--text-2); }
 details.fold p { margin-top: var(--sp-2); line-height: 1.7; }
 
+/* =========================================================== updates === */
+
+.update-chip { cursor: pointer; font-family: inherit; border-color: var(--info-border); background: var(--info-bg); color: var(--info-text); font-weight: 600; }
+.update-chip:hover { border-color: var(--accent); }
+.update-chip.required { border-color: var(--err-border); background: var(--err-bg); color: var(--err-text); }
+.update-chip.required .status-dot { background: var(--red); box-shadow: 0 0 0 3px rgba(239, 68, 68, .18); }
+
+.updates-card { border-left: 3px solid var(--accent); }
+.updates-card.available { border-left-color: var(--green); }
+.updates-card.required { border-left-color: var(--red); }
+.updates-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; }
+.updates-title { font-family: var(--font-display); font-size: 1rem; font-weight: 650; color: var(--text); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.updates-sub { font-size: .76rem; color: var(--text-3); margin-top: 3px; }
+.updates-list { margin: var(--sp-3) 0 0 var(--sp-5); font-size: .84rem; color: var(--text-2); line-height: 1.65; }
+.updates-list li { margin-bottom: 3px; }
+.updates-status { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-3);
+  padding-top: var(--sp-3); border-top: 1px dashed var(--border); font-size: .78rem; color: var(--text-3); }
+.updates-status .grow { flex: 1; }
+.release-block + .release-block { margin-top: var(--sp-4); padding-top: var(--sp-4); border-top: 1px solid var(--border); }
+.release-block h4 { font-size: .9rem; font-weight: 650; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.release-block .release-date { font-size: .74rem; color: var(--text-4); font-weight: 500; }
+
 /* ======================================================= team folder === */
 
 .callout a, .steps-plain a, .card-note a { color: var(--accent); font-weight: 600; text-decoration: none; }

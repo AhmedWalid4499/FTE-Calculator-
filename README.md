@@ -197,6 +197,47 @@ drop-downs of the exact rate-card names.
 
 ---
 
+## Updates
+
+The top of the **Dashboard** shows what the current version added, and
+whether a newer one has been published. **Check for updates** asks straight
+away; the app also checks by itself when it starts, every 30 minutes, and when
+you come back to it. When an update is available, a chip appears in the top
+bar on every page.
+
+| How you opened it | What **Update now** does |
+|---|---|
+| `Start FTE Calculator.cmd` | Downloads the new version from GitHub, installs it and restarts on the same address. Your estimates, settings, DPM directory and data folder are not touched; the version you had is kept in `backup/` next to the app. |
+| The website | Reloads the page with fresh files — the website itself is already updated. |
+| A git working copy | Runs `git pull`, only if the copy has no local changes. The previous version stays in git's history. |
+| The single file | Opens the website — a single file cannot replace itself. |
+
+**One version for everyone.** The data folder holds a small file,
+`fte-folder.json`, naming the oldest version of the app allowed to save
+there. An older copy refuses to save and asks to be updated, instead of
+writing the folder the old way — your work stays in the browser until it can
+be saved. A page left open while the launcher was updated likewise asks to be
+reloaded, and a launcher window left running after its files were replaced
+(say, by a second window) asks to be restarted. Versions before 2.2.0 cannot
+read this file, so everyone should update to 2.2.0 once; from then on the
+check covers every later release.
+
+### Releasing a new version (for the maintainer)
+
+1. Make the changes.
+2. In `assets/release-notes.js`, add an entry at the top of `releases` —
+   version, date, a title and the features in plain words — and set
+   `"version"` to it. That file is the only place the version number lives.
+3. Raise `"folderMinVersion"` as well only when older versions must stop
+   saving into the shared folder, for example after changing its layout.
+   The first *published* copy to open the folder raises the marker for
+   everyone and it is never lowered — so raise it only in a commit you push
+   straight away. (A git working copy never raises it, so testing a release
+   locally cannot lock the team out.)
+4. Commit and push. Everyone's app offers the update within a few minutes.
+
+---
+
 ## Managing the DPM directory
 
 The published list is only a starting point. On the **DPM Directory** page you
@@ -265,9 +306,10 @@ reproducible.
 powershell -ExecutionPolicy Bypass -File build\Make-Portable.ps1
 ```
 
-Produces `DPM-FTE-Calculator-portable.html`, a single ~1.3 MB file with
-everything folded in. It can be emailed and opened by double-clicking, and
-loads nothing from the internet.
+Produces `DPM-FTE-Calculator-portable.html`, a single ~1.6 MB file with
+everything folded in. It can be emailed and opened by double-clicking. It
+needs nothing from the internet to work; the only thing it fetches is the
+release notes on GitHub, to say when a newer version exists.
 
 ---
 

@@ -51,6 +51,9 @@
     <header class="topbar">
       <span class="topbar-title" id="page-title">Dashboard</span>
       <div class="topbar-right">
+        <button type="button" class="status-chip update-chip hidden" id="update-chip" data-goto="dashboard">
+          <span class="status-dot on"></span><span id="update-chip-text">Update available</span>
+        </button>
         <div class="status-chip" id="storage-chip" title="Where your calculations are being saved">
           <span class="status-dot off" id="storage-dot"></span>
           <span id="storage-text">Checking storage…</span>
@@ -64,6 +67,9 @@
 
     <!-- ═══════════════════════════════════════════════ DASHBOARD ══════ -->
     <section class="page active" id="page-dashboard">
+      <!-- What's new in this version, and whether a newer one is available -->
+      <div id="dash-updates"></div>
+
       <div class="page-head">
         <h2>Dashboard</h2>
         <p>The most recent WAN and LAN estimates, and how the effort is spread across the project calendar.</p>
@@ -900,6 +906,7 @@
 <script src="lib/chart.umd.min.js"></script>
 <script src="lib/exceljs.min.js"></script>
 <script src="assets/dpm-directory.js"></script>
+<script src="assets/release-notes.js"></script>
 <script src="assets/data.js"></script>
 <script src="assets/calc.js"></script>
 <script src="assets/db.js"></script>
@@ -907,6 +914,7 @@
 <script src="assets/export.js"></script>
 <script src="assets/import.js"></script>
 <script src="assets/planner.js"></script>
+<script src="assets/updates.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>
