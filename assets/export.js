@@ -63,8 +63,12 @@
     return wb;
   }
 
+  /* Set while one estimate's sheets are added to a workbook that holds two
+     (WAN and LAN), so their sheet names stay apart: "WAN · Summary". */
+  var _sheetPrefix = '';
+
   function newSheet(wb, name, widths) {
-    var ws = wb.addWorksheet(name.slice(0, 31), {
+    var ws = wb.addWorksheet((_sheetPrefix + name).slice(0, 31), {
       views: [{ showGridLines: false }],
       pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
     });
@@ -564,6 +568,12 @@
 
   function buildRecordBook(record) {
     var wb = newBook();
+    addRecordSheets(wb, record);
+    return wb;
+  }
+
+  /* Every sheet describing one estimate, added to an existing workbook. */
+  function addRecordSheets(wb, record) {
     var r = record.results, i = record.inputs;
     var isWan = record.type === 'WAN';
 
@@ -773,7 +783,56 @@
     siteListSheet(wb, record);
     rateCardSheet(wb, record);
     dpmSheet(wb, record);
-    return wb;
+  }
+
+  /* ------------------------------------------------- project workbook --- */
+
+  /* The workbook saved beside a project's estimates: "<project> - <who>.xlsx".
+     It holds that person's latest estimate of the project - both, when they
+     have estimated it as WAN and as LAN, with an overview sheet in front and
+     each estimate's sheets prefixed by its type. Resolves with the file bytes. */
+  function buildProjectWorkbook(records) {
+    if (!available()) return Promise.reject(new Error('Excel library unavailable'));
+    var list = (records || []).slice().sort(function (a, b) {
+      return (a.type === 'WAN' ? 0 : 1) - (b.type === 'WAN' ? 0 : 1);
+    });
+    if (!list.length) return Promise.reject(new Error('nothing to put in the workbook'));
+    var wb = newBook();
+    if (list.length > 1) projectOverviewSheet(wb, list);
+    list.forEach(function (rec) {
+      _sheetPrefix = list.length > 1 ? rec.type + ' · ' : '';
+      try { addRecordSheets(wb, rec); } finally { _sheetPrefix = ''; }
+    });
+    return wb.xlsx.writeBuffer();
+  }
+
+  function projectOverviewSheet(wb, list) {
+    var first = list[0];
+    var ws = newSheet(wb, 'Overview', [12, 12, 12, 12, 14, 12, 10, 16, 22, 30]);
+    titleBlock(ws, 10, 'PROJECT OVERVIEW', first.projectName,
+      'The latest ' + list.map(function (r) { return r.type; }).join(' and ') + ' estimate' +
+      (list.length > 1 ? 's' : '') + ' - the sheets that follow give each in full.');
+    var row = addTable(ws, {
+      row: 5, hint: 'Overview', theme: 'TableStyleMedium2', filter: false,
+      columns: [
+        { name: 'Estimate', align: 'center' },
+        { name: 'FTE', numFmt: FMT.fte, align: 'right' },
+        { name: 'Peak FTE', numFmt: FMT.fte, align: 'right' },
+        { name: 'Headcount', numFmt: FMT.int, align: 'right' },
+        { name: 'Total MD', numFmt: FMT.md1, align: 'right' },
+        { name: 'Months', numFmt: FMT.md1, align: 'right' },
+        { name: 'Sites', numFmt: FMT.int, align: 'right' },
+        { name: 'Planned start' },
+        { name: 'Calculated at' },
+        { name: 'Created by' }
+      ],
+      rows: list.map(function (rec) {
+        var r = rec.results || {}, i = rec.inputs || {};
+        return [rec.type, r.fte, isShaped(r) ? r.peakFte : r.fte, r.headcount, r.totalMd, i.months, i.totalSites,
+                startMonthLabel(rec), new Date(rec.savedAt).toLocaleString(), personText(rec.createdBy) || '-'];
+      })
+    });
+    note(ws, row, 'FTE from different estimates are not simply added: WAN and LAN may be staffed by different people.');
   }
 
   /* "Ahmed Elbourgy <ahmed.elbourgy.ext@orange.com>" */
@@ -1106,7 +1165,8 @@
     if (!available()) { global.UI.toast('Excel library unavailable.', 'err'); return Promise.resolve(); }
     try {
       var wb = buildRecordBook(record);
-      return save(wb, record.type + '_' + safeName(record.projectName) + '_' + stamp() + '.xlsx')
+      /* The same basic name as the copy kept in the project folder. */
+      return save(wb, D.projectWorkbookName(record.projectName, record.createdBy))
         .then(function () { global.UI.toast(record.type + ' workbook exported.', 'ok'); })
         .catch(fail);
     } catch (err) { fail(err); return Promise.resolve(); }
@@ -1347,6 +1407,7 @@
     exportProject: exportProject,
     exportDpmDirectory: exportDpmDirectory,
     downloadImportTemplate: downloadImportTemplate,
-    exportCapacityPlan: exportCapacityPlan
+    exportCapacityPlan: exportCapacityPlan,
+    buildProjectWorkbook: buildProjectWorkbook
   };
 })(window);

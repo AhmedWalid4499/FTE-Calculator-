@@ -1241,14 +1241,194 @@
 
   function persistRecord(record) {
     DB.saveRecord(record).then(function (res) {
-      if (res.written) U.toast('Calculation saved to ' + res.file, 'ok');
-      else U.toast('Calculation saved in this browser. It will be written to the data folder when the app host is running.', 'warn');
       renderStorageStatus();
-      return DB.listRecords();
-    }).then(function (rows) {
-      S.records = rows;
-      renderDashboard();
+      return DB.listRecords().then(function (rows) {
+        S.records = rows;
+        renderDashboard();
+        if (!res.written) {
+          U.toast('Calculation saved in this browser. It will be written to the data folder when the app host is running.', 'warn');
+          return;
+        }
+        /* The estimate is on disk; now the project's workbook beside it. */
+        return updateProjectWorkbook(record.projectName, record.createdBy, { silent: true }).then(function (wbk) {
+          var where = (onTeamFolder() ? 'SharePoint' : 'the data folder') + ' › ' + D.projectFolderName(record.projectName);
+          if (wbk && wbk.written) U.toast('Saved to ' + where + ': the estimate and “' + wbk.name + '”.', 'ok');
+          else if (wbk && wbk.error) U.toast('Estimate saved to ' + where + ', but the Excel workbook could not be updated: ' + wbk.error, 'warn');
+          else U.toast('Calculation saved to ' + res.file, 'ok');
+        });
+      });
     });
+  }
+
+  /* ---------------------------------------------------- project workbook -- */
+
+  /* Beside every project's estimates sits "<project> - <who did it>.xlsx",
+     rebuilt from that person's latest estimate(s) of the project whenever one
+     changes, and removed when they have none left.
+       - Built from a fresh read of the data folder when the job runs, never
+         from this browser's copy, which can lag behind colleagues' changes -
+         so nobody's workbook is regressed or removed on stale information.
+       - One file belongs to one person: estimates are grouped by the person's
+         email and the file is named from their newest estimate. If two people
+         would get the same file name, each gets their email name added.
+       - Jobs run one at a time, so two changes never write one file together. */
+  var workbookQueue = Promise.resolve();
+
+  function enqueueWorkbookJob(fn) {
+    var job = workbookQueue.then(fn);
+    workbookQueue = job.then(function () {}, function () {});
+    return job;
+  }
+
+  function groupKey(projectName, person) {
+    return D.projectFolderName(projectName).toLowerCase() + '|' + creatorKey({ createdBy: person });
+  }
+
+  function workbookPool() {
+    return DB.loadTeamRecords().then(function (t) { return t.records; });
+  }
+
+  /* Every workbook the estimates in `pool` call for.
+     groups: key -> { folder, name, latest: [record] }
+     claims: "folder|name" (lower case) -> key */
+  function planWorkbooks(pool) {
+    var groups = {};
+    (pool || []).forEach(function (r) {
+      if (!r || !r.results) return;
+      var k = groupKey(r.projectName, r.createdBy);
+      var g = groups[k] || (groups[k] = { key: k, folder: D.projectFolderName(r.projectName), records: [] });
+      g.records.push(r);
+    });
+    var byName = {};
+    Object.keys(groups).forEach(function (k) {
+      var g = groups[k];
+      g.records.sort(function (a, b) { return String(b.savedAt || '').localeCompare(String(a.savedAt || '')); });
+      g.person = g.records[0].createdBy || null;
+      g.name = D.projectWorkbookName(g.records[0].projectName, g.person);
+      var latest = {};
+      g.records.forEach(function (r) { if (!latest[r.type]) latest[r.type] = r; });
+      g.latest = Object.keys(latest).map(function (t) { return latest[t]; });
+      var nk = (g.folder + '|' + g.name).toLowerCase();
+      (byName[nk] = byName[nk] || []).push(g);
+    });
+    Object.keys(byName).forEach(function (nk) {
+      if (byName[nk].length < 2) return;
+      byName[nk].forEach(function (g) {
+        var tag = g.person && g.person.email ? String(g.person.email).split('@')[0] : 'unknown';
+        g.name = D.projectWorkbookName(g.records[0].projectName, { name: personName(g.person) + ' (' + tag + ')' });
+      });
+    });
+    var claims = {};
+    Object.keys(groups).forEach(function (k) {
+      var g = groups[k];
+      claims[(g.folder + '|' + g.name).toLowerCase()] = k;
+    });
+    return { groups: groups, claims: claims };
+  }
+
+  function isClaimed(plan, folder, name) {
+    return !!plan.claims[(folder + '|' + name).toLowerCase()];
+  }
+
+  function errorText(err) { return (err && err.message) || String(err); }
+
+  /* Bring whole project folders in line with the plan: every person's
+     workbook in them rebuilt, and any "<project> - ....xlsx" no estimate calls
+     for any more removed - a deleted person's, or one left under an old name
+     (a changed display name, or a same-name clash that has since gone away).
+     folders: lower-case folder names, or null for every folder. */
+  function syncFolders(plan, folders, tally) {
+    function fail(err) { tally.failed++; tally.lastError = errorText(err); }
+    function wanted(folder) { return !folders || folders[folder.toLowerCase()]; }
+    var groups = Object.keys(plan.groups).map(function (k) { return plan.groups[k]; })
+      .filter(function (g) { return wanted(g.folder); });
+    return groups.reduce(function (c, g) {
+      return c.then(function () {
+        return EX.buildProjectWorkbook(g.latest)
+          .then(function (bytes) { return DB.saveProjectFile(g.folder, g.name, bytes); })
+          .then(function () { tally.written++; tally.names[g.key] = g.name; }, fail);
+      });
+    }, Promise.resolve()).then(function () {
+      return DB.listProjectFiles();
+    }).then(function (files) {
+      var orphans = files.filter(function (f) {
+        return wanted(f.folder) &&
+               f.name.toLowerCase().indexOf((f.folder + ' - ').toLowerCase()) === 0 &&
+               !isClaimed(plan, f.folder, f.name);
+      });
+      return orphans.reduce(function (c, f) {
+        return c.then(function () {
+          return DB.deleteProjectFile(f.folder, f.name).then(function () { tally.removed++; }, fail);
+        });
+      }, Promise.resolve());
+    });
+  }
+
+  function newTally() { return { written: 0, removed: 0, failed: 0, lastError: '', names: {} }; }
+
+  /**
+   * Update the workbooks of one project after one person's estimate changed.
+   * opts.silent: the caller reports the outcome itself; otherwise a failure
+   * is shown as a warning. Resolves { name, folder, written | removed | skipped | error }.
+   */
+  function updateProjectWorkbook(projectName, person, opts) {
+    var folder = D.projectFolderName(projectName);
+    var key = groupKey(projectName, person);
+    var name = D.projectWorkbookName(projectName, person);
+    return enqueueWorkbookJob(function () {
+      if (DB.status().mode === 'browser') return { name: name, folder: folder, skipped: true };
+      var tally = newTally(), only = {};
+      only[folder.toLowerCase()] = true;
+      return workbookPool().then(function (pool) {
+        var plan = planWorkbooks(pool);
+        return syncFolders(plan, only, tally).then(function () {
+          var mine = plan.groups[key];
+          if (tally.failed) return { name: mine ? mine.name : name, folder: folder, error: tally.lastError };
+          return mine ? { name: mine.name, folder: folder, written: true } : { name: name, folder: folder, removed: true };
+        });
+      });
+    }).catch(function (err) {
+      return { name: name, folder: folder, error: errorText(err) };
+    }).then(function (res) {
+      if (res.error && !(opts && opts.silent)) {
+        U.toast('The Excel workbook “' + res.name + '” could not be updated: ' + res.error, 'warn');
+      }
+      return res;
+    });
+  }
+
+  /**
+   * Update many workbooks in one job, from one fresh read of the folder.
+   * opts.keys: [{ projectName, createdBy }] - only those projects' folders;
+   * default: every project folder. Resolves a tally; failures are shown
+   * unless opts.silent.
+   */
+  function rebuildWorkbooks(opts) {
+    opts = opts || {};
+    var tally = newTally();
+    return enqueueWorkbookJob(function () {
+      if (DB.status().mode === 'browser') return tally;
+      var folders = null;
+      if (opts.keys) {
+        folders = {};
+        opts.keys.forEach(function (x) { folders[D.projectFolderName(x.projectName).toLowerCase()] = true; });
+      }
+      return workbookPool().then(function (pool) { return syncFolders(planWorkbooks(pool), folders, tally); });
+    }).then(function () { return tally; }, function (err) {
+      tally.failed++; tally.lastError = errorText(err); return tally;
+    }).then(function (t) {
+      if (t.failed && !opts.silent) U.toast(t.failed + ' Excel workbook(s) could not be updated: ' + t.lastError, 'warn');
+      return t;
+    });
+  }
+
+  /* Estimates that reached disk later - a flush once the folder was back, a
+     publish into a newly linked folder - or a delete that had to wait: their
+     projects' workbooks catch up here. */
+  function onRecordsChanged(ev) {
+    var keys = ev.written.map(function (r) { return { projectName: r.projectName, createdBy: r.createdBy }; })
+      .concat(ev.deleted.map(function (t) { return { projectName: t.projectName, createdBy: t.createdBy }; }));
+    if (keys.length) rebuildWorkbooks({ keys: keys });
   }
 
   /* Notes and the planned start month may change after Calculate without a
@@ -1294,6 +1474,7 @@
       if (st.record && st.record.id === saved.id) st.record = saved;
       if (!startChanged && saved.inputs.durationSource !== 'dates') setVal(p + '-start-month', saved.inputs.startMonth || '');
       S.plan.team = null;   // the team plan re-reads on its next visit
+      if (res.written) updateProjectWorkbook(saved.projectName, saved.createdBy);   // in the background
       return DB.listRecords().then(function (rows) { S.records = rows; return saved; });
     }).catch(function (err) {
       console.error(err);
@@ -1661,6 +1842,7 @@
       return DB.deleteRecord(id).then(function (res) {
         return DB.listRecords().then(function (rows) {
           S.records = rows; S.plan.team = null;
+          updateProjectWorkbook(rec.projectName, rec.createdBy);   // rebuilt from what is left, or removed
           if (S.wan.record && S.wan.record.id === id) S.wan.record = null;
           if (S.lan.record && S.lan.record.id === id) S.lan.record = null;
           renderRecords(); renderPortfolio(); renderDashboard();
@@ -2022,6 +2204,7 @@
       return DB.updateRecord(copy);
     }).then(function (res) {
       team.records[idx] = res.record;
+      if (res.written) updateProjectWorkbook(res.record.projectName, res.record.createdBy);
       /* If this estimate is the one open on the WAN/LAN page, keep its
          Planned start field in step - but only while that form still shows
          this project, never a different one loaded since. */
@@ -2565,6 +2748,7 @@
         return afterDataRootChange('Linked to the SharePoint team folder “' + TF.name + '”. Every estimate is now saved there and ' +
           'uploaded by OneDrive' + (n[0] || n[1]
             ? ' — ' + n[0] + ' of your earlier estimate(s) and ' + n[1] + ' project(s) copied in.' : '.'));
+        /* The copied estimates' workbooks follow through DB.onRecordsChanged. */
       });
     }).catch(function (err) {
       renderStorageStatus();
@@ -2646,7 +2830,8 @@
     } else if (st.mode === 'folder') {
       rows.push('<div class="callout"><span class="callout-ic">✓</span><span>' +
         '<b>Saving to the folder “' + esc(st.folderName) + '”.</b> Every calculation is written there as a JSON file, ' +
-        'into <span class="code">records/</span> and <span class="code">projects/</span> sub-folders. ' +
+        'in a folder per project together with the project\'s Excel workbook; saved configurations go in ' +
+        '<span class="code">projects/</span>. ' +
         'Your browser may ask you to confirm this folder again after you close and reopen it.</span></div>');
       buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="change">Change folder</button>');
       buttons.push('<button class="btn btn-outline btn-sm" data-storage-act="publish">Copy my estimates here</button>');
@@ -3466,6 +3651,26 @@
           U.toast('Re-synced. ' + n + ' record(s) written to disk.', 'ok');
         });
     });
+    el('maint-workbooks').addEventListener('click', function () {
+      if (DB.status().mode === 'browser') {
+        U.toast('Workbooks are written into the data folder, which this page cannot reach right now.', 'warn');
+        return;
+      }
+      U.toast('Rebuilding the Excel workbooks…', 'info');
+      var moved = 0;
+      /* Estimates an earlier version kept in records/ first move into their
+         project folders, so each folder ends up with its JSON and its Excel. */
+      DB.organiseLegacyRecords()
+        .then(function (n) { moved = n; return rebuildWorkbooks({ silent: true }); })
+        .then(function (t) {
+          U.toast(t.written + ' workbook(s) rebuilt' +
+            (t.removed ? ', ' + t.removed + ' left over from deleted estimates removed' : '') +
+            (moved ? ', ' + moved + ' older estimate(s) moved into their project folders' : '') +
+            (t.failed ? '; ' + t.failed + ' could not be written (' + t.lastError + ')' : '') + '.', t.failed ? 'warn' : 'ok');
+          return DB.listRecords().then(function (rows) { S.records = rows; renderRecords(); });
+        })
+        .catch(function (err) { U.toast('Could not rebuild the workbooks: ' + (err && err.message ? err.message : err), 'err'); });
+    });
     el('maint-purge').addEventListener('click', function () {
       var st = DB.status();
       var shared = st.shared;
@@ -3475,9 +3680,14 @@
         'This cannot be undone.',
         { confirmLabel: 'Delete everything', danger: true }).then(function (yes) {
         if (!yes) return;
-        return S.records.reduce(function (chain, r) {
+        var gone = S.records.slice();
+        return gone.reduce(function (chain, r) {
           return chain.then(function () { return DB.deleteRecord(r.id); });
         }, Promise.resolve()).then(function () {
+          /* Each affected workbook is rebuilt from what is really left on
+             disk - removed when nothing is, kept if a colleague's estimate
+             this browser never saw still belongs in it. */
+          rebuildWorkbooks({ keys: gone.map(function (r) { return { projectName: r.projectName, createdBy: r.createdBy }; }) });
           S.records = []; S.wan.record = null; S.lan.record = null;
           renderRecords(); renderPortfolio(); renderDashboard();
           renderResultChip(null); renderSettingsPage();
@@ -3500,6 +3710,7 @@
     renderDpmDirectory();
 
     DB.onStatusChange(renderStorageStatus);
+    DB.onRecordsChanged(onRecordsChanged);
 
     DB.init()
       .then(function () { return DB.getSettings(); })

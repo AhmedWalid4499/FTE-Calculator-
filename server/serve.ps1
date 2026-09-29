@@ -200,6 +200,7 @@ $script:DataRoot = $null
 $script:RecDir   = $null
 $script:ProjDir  = $null
 $script:RecordCache = @{}   # full path -> @{ Stamp; Text; Ticks; Summary }
+$script:IgnoredFiles = @{}  # full path -> stamp, for JSON files that are not estimates
 $script:SkippedFiles = 0    # record files that could not be read on the last scan
 
 function Test-IsDefaultRoot {
@@ -217,6 +218,7 @@ function Set-DataRoot {
     $script:RecDir   = Join-Path $full 'records'
     $script:ProjDir  = Join-Path $full 'projects'
     $script:RecordCache = @{}
+    $script:IgnoredFiles = @{}
     # index.json was a cache that earlier versions wrote into the app's own
     # data folder. It is no longer used (the list is built live from the
     # files). Only ever tidied there: a folder the user picks may hold an
@@ -351,10 +353,55 @@ function Find-TeamFolder {
     }
 
     foreach ($c in $found) {
-        $rd = Join-Path $c.path 'records'
-        $c.records = @(Get-ChildItem -LiteralPath $rd -Filter '*.json' -File -ErrorAction SilentlyContinue).Count
+        $c.records = (Get-RecordFiles -Root $c.path).Count
     }
     return ,$found
+}
+
+# ------------------------------------------------------ project folders ----
+
+# Layout of a data folder:
+#   <Project name>\<record id>.json          one file per calculation
+#   <Project name>\<Project name> - <who>.xlsx
+#   projects\                                saved configurations
+#   records\                                 where earlier versions kept every
+#                                            estimate - still read, no longer written
+# The browser names the project folder (one place decides it, so the launcher
+# and the Chrome folder mode always agree); the host only checks that it is a
+# single, safe folder name inside the data folder.
+$script:AppFolders = @('records', 'projects')
+
+function Test-SafeItemName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 150) { return $false }
+    if ($Name -match '[\\/:*?"<>|]' -or $Name -match '[\x00-\x1f]') { return $false }
+    if ($Name -match '^\s' -or $Name -match '[\. ]$' -or $Name -match '^\.+$') { return $false }
+    if ($Name -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$') { return $false }
+    return $true
+}
+
+function Test-ProjectFolderName {
+    param([string]$Name)
+    return (Test-SafeItemName $Name) -and ($script:AppFolders -notcontains $Name.ToLowerInvariant())
+}
+
+# Header values arrive percent-encoded so that names with accents survive.
+function Get-HeaderText {
+    param([hashtable]$Headers, [string]$Name)
+    if (-not $Headers -or -not $Headers.ContainsKey($Name)) { return '' }
+    try { return [Uri]::UnescapeDataString([string]$Headers[$Name]) } catch { return '' }
+}
+
+# Every estimate file in a data folder: the project folders plus the old
+# records\ folder.
+function Get-RecordFiles {
+    param([string]$Root = $script:DataRoot)
+    $list = @(Get-ChildItem -LiteralPath (Join-Path $Root 'records') -Filter '*.json' -File -ErrorAction SilentlyContinue)
+    foreach ($d in @(Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue)) {
+        if ($script:AppFolders -contains $d.Name.ToLowerInvariant()) { continue }
+        $list += @(Get-ChildItem -LiteralPath $d.FullName -Filter '*.json' -File -ErrorAction SilentlyContinue)
+    }
+    return ,$list
 }
 
 # ------------------------------------------------------- record storage ----
@@ -366,20 +413,28 @@ function Find-TeamFolder {
 function Update-RecordCache {
     $seen = @{}
     $skipped = 0
-    $files = @(Get-ChildItem -LiteralPath $script:RecDir -Filter '*.json' -File -ErrorAction SilentlyContinue)
+    $files = Get-RecordFiles
     foreach ($f in $files) {
         $path  = $f.FullName
         $stamp = "$($f.LastWriteTimeUtc.Ticks)-$($f.Length)"
         $seen[$path] = $true
         $entry = $script:RecordCache[$path]
         if ($entry -and $entry.Stamp -eq $stamp) { continue }
+        if ($script:IgnoredFiles[$path] -eq $stamp) { continue }
         try {
             $raw = [System.IO.File]::ReadAllText($path, $Utf8).Trim()
             $r   = $raw | ConvertFrom-Json
             $id  = Get-Prop $r 'id'
-            if (-not $id) { throw 'no id' }
             $res = Get-Prop $r 'results'
             $inp = Get-Prop $r 'inputs'
+            # Some other JSON someone dropped into a project folder: not an
+            # estimate, not an error either - just not ours to list.
+            if (-not $id -or -not $res) {
+                $script:RecordCache.Remove($path)
+                $script:IgnoredFiles[$path] = $stamp
+                continue
+            }
+            $rel = $path.Substring($script:DataRoot.TrimEnd('\').Length + 1).Replace('\', '/')
             $script:RecordCache[$path] = @{
                 Stamp   = $stamp
                 Ticks   = $f.LastWriteTimeUtc.Ticks
@@ -402,17 +457,28 @@ function Update-RecordCache {
                     headcount   = Get-Prop $res 'headcount'
                     totalSites  = Get-Prop $inp 'totalSites'
                     months      = Get-Prop $inp 'months'
-                    file        = "records/$($f.Name)"
+                    file        = $rel
                 }
             }
         } catch {
             $script:RecordCache.Remove($path)
-            $skipped++
-            Write-Log "skipping unreadable record $($f.Name)" 'DarkYellow'
+            # Only a file that should have been an estimate - one named like
+            # one, or in records\ - counts as unreadable. Someone else's broken
+            # JSON in a project folder is simply not ours; counting it would
+            # make every listing look incomplete and stop deletions syncing.
+            if ($f.Name -match '^FTE-' -or $f.Directory.Name -ieq 'records') {
+                $skipped++
+                Write-Log "skipping unreadable record $($f.Name)" 'DarkYellow'
+            } else {
+                $script:IgnoredFiles[$path] = $stamp
+            }
         }
     }
     foreach ($k in @($script:RecordCache.Keys)) {
         if (-not $seen.ContainsKey($k)) { $script:RecordCache.Remove($k) }
+    }
+    foreach ($k in @($script:IgnoredFiles.Keys)) {
+        if (-not $seen.ContainsKey($k)) { $script:IgnoredFiles.Remove($k) }
     }
     $script:SkippedFiles = $skipped
 }
@@ -430,6 +496,34 @@ function Get-UniqueRecordEntries {
         if (($a -gt $b) -or (($a -eq $b) -and ($e.Ticks -gt $cur.Ticks))) { $byId[$id] = $e }
     }
     return @($byId.Values)
+}
+
+# Newest cached copy of one estimate whose file still exists, or $null.
+function Find-CachedRecordFile {
+    param([string]$Id)
+    $best = $null; $bestPath = $null
+    foreach ($k in @($script:RecordCache.Keys)) {
+        $e = $script:RecordCache[$k]
+        if ([string]$e.Summary.id -ne $Id -or -not (Test-Path -LiteralPath $k)) { continue }
+        if (-not $best -or [string]$e.Summary.savedAt -gt [string]$best.Summary.savedAt -or
+            ([string]$e.Summary.savedAt -eq [string]$best.Summary.savedAt -and $e.Ticks -gt $best.Ticks)) {
+            $best = $e; $bestPath = $k
+        }
+    }
+    if ($best) { return $bestPath }
+    return $null
+}
+
+# The data folder can disappear while the launcher runs - the OneDrive
+# shortcut removed, sharing revoked. Writing then must fail (the browser keeps
+# the estimate and retries) rather than quietly re-create the folder as a
+# private, unsynced one at the same path.
+function Test-DataRootPresent { return (Test-Path -LiteralPath $script:DataRoot -PathType Container) }
+
+function Send-DataRootMissing {
+    param([System.IO.Stream]$Stream)
+    Write-Log "data folder is missing: $script:DataRoot" 'Red'
+    Send-Error $Stream 503 'Service Unavailable' "The data folder is not available right now ($script:DataRoot). Is OneDrive running? The estimate is kept in the browser and written once the folder is back."
 }
 
 function Get-RecordSummaries {
@@ -469,8 +563,67 @@ function Invoke-ApiRoute {
         [System.IO.Stream]$Stream,
         [string]$Method,
         [string]$Path,      # already url-decoded, starts with /api
-        [string]$Body
+        [string]$Body,
+        [hashtable]$Headers = @{}
     )
+
+    # --- every workbook in the project folders (for Rebuild's tidy-up) -----
+    if ($Path -eq '/api/project-files/list') {
+        $items = @()
+        foreach ($d in @(Get-ChildItem -LiteralPath $script:DataRoot -Directory -ErrorAction SilentlyContinue)) {
+            if ($script:AppFolders -contains $d.Name.ToLowerInvariant()) { continue }
+            foreach ($f in @(Get-ChildItem -LiteralPath $d.FullName -Filter '*.xlsx' -File -ErrorAction SilentlyContinue)) {
+                $items += [ordered]@{ folder = $d.Name; name = $f.Name }
+            }
+        }
+        Send-Json -Stream $Stream -Object ([ordered]@{ ok = $true; files = @($items) })
+        return
+    }
+
+    # --- files of a project folder (the Excel workbook) --------------------
+    # POST writes the file (body = base64), DELETE removes it and, when the
+    # folder is left empty, the folder too. Folder and file name come in the
+    # X-FTE-Folder / X-FTE-Name headers.
+    if ($Path -eq '/api/project-files') {
+        $folder = Get-HeaderText $Headers 'x-fte-folder'
+        $name   = Get-HeaderText $Headers 'x-fte-name'
+        if (-not (Test-ProjectFolderName $folder)) { Send-Error $Stream 400 'Bad Request' 'invalid project folder name'; return }
+        if (-not (Test-SafeItemName $name) -or $name -notmatch '\.xlsx$') { Send-Error $Stream 400 'Bad Request' 'invalid file name'; return }
+        $dir  = Join-Path $script:DataRoot $folder
+        $dest = Join-Path $dir $name
+        if (-not (Test-WithinRoot $dest $script:DataRoot)) { Send-Error $Stream 400 'Bad Request' 'invalid path'; return }
+        $rel = (Split-Path -Leaf $script:DataRoot) + "/$folder/$name"
+
+        if ($Method -eq 'POST') {
+            try { $bytes = [Convert]::FromBase64String($Body.Trim()) }
+            catch { Send-Error $Stream 400 'Bad Request' 'the file must be sent as base64'; return }
+            if ($bytes.Length -lt 4 -or $bytes[0] -ne 0x50 -or $bytes[1] -ne 0x4B) {
+                Send-Error $Stream 400 'Bad Request' 'that is not an Excel workbook'; return   # .xlsx is a zip: "PK"
+            }
+            if (-not (Test-DataRootPresent)) { Send-DataRootMissing $Stream; return }
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+            try { [System.IO.File]::WriteAllBytes($dest, $bytes) }
+            catch [System.IO.IOException] {
+                Send-Error $Stream 409 'Conflict' "'$name' is open in another program, so it could not be updated. Close it and it is rewritten next time."
+                return
+            }
+            Write-Log "saved workbook $folder\$name" 'Green'
+            Send-Json -Stream $Stream -Status 201 -StatusText 'Created' -Object ([ordered]@{ ok = $true; file = $rel })
+            return
+        }
+        if ($Method -eq 'DELETE') {
+            try { if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force } }
+            catch { Send-Error $Stream 409 'Conflict' "'$name' is open in another program, so it could not be removed."; return }
+            if ((Test-Path -LiteralPath $dir -PathType Container) -and -not @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue).Count) {
+                Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue
+            }
+            Write-Log "removed workbook $folder\$name" 'DarkYellow'
+            Send-Json -Stream $Stream -Object ([ordered]@{ ok = $true; file = $rel })
+            return
+        }
+        Send-Error $Stream 405 'Method Not Allowed' 'POST or DELETE'
+        return
+    }
 
     # --- health -----------------------------------------------------------
     if ($Path -eq '/api/health') {
@@ -652,14 +805,35 @@ function Invoke-ApiRoute {
                 $id  = [string](Get-Prop $rec 'id')
                 if (-not $id) { Send-Error $Stream 400 'Bad Request' 'record.id is required'; return }
                 $name = (ConvertTo-SafeFileName $id) + '.json'
-                $dest = Join-Path $script:RecDir $name
-                if (-not (Test-WithinRoot $dest $script:RecDir)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
+                # Into the project's own folder; the old records\ folder only
+                # when an older page sends no folder.
+                $folder = Get-HeaderText $Headers 'x-fte-folder'
+                if ($folder -and -not (Test-ProjectFolderName $folder)) { Send-Error $Stream 400 'Bad Request' 'invalid project folder name'; return }
+                $dir  = if ($folder) { Join-Path $script:DataRoot $folder } else { $script:RecDir }
+                $dest = Join-Path $dir $name
+                if (-not (Test-WithinRoot $dest $script:DataRoot)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
+                if (-not (Test-DataRootPresent)) { Send-DataRootMissing $Stream; return }
+                if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir | Out-Null }
                 Write-TextFile -Path $dest -Content $Body
+                # Superseded copies of this estimate: the one an earlier
+                # version kept in records\, and OneDrive conflict copies
+                # ("<id>-<PC>.json") beside it. Looked up by name in just those
+                # two folders - rescanning every project folder on each save
+                # would slow the launcher as the team folder grows.
+                foreach ($d2 in @($dir, $script:RecDir)) {
+                    foreach ($f2 in @(Get-ChildItem -LiteralPath $d2 -Filter ((ConvertTo-SafeFileName $id) + '*.json') -File -ErrorAction SilentlyContinue)) {
+                        if ($f2.FullName -ieq $dest) { continue }
+                        try { $other = [string](Get-Prop ([System.IO.File]::ReadAllText($f2.FullName, $Utf8) | ConvertFrom-Json) 'id') } catch { $other = '' }
+                        if ($other -eq $id) { Remove-Item -LiteralPath $f2.FullName -Force -ErrorAction SilentlyContinue }
+                    }
+                }
                 $md = Get-Prop (Get-Prop $rec 'results') 'totalMd'
                 Write-Log "saved record $id  ($(Get-Prop $rec 'type'), $md MD)" 'Green'
+                $sub = if ($folder) { $folder } else { 'records' }
                 Send-Json -Stream $Stream -Status 201 -StatusText 'Created' -Object ([ordered]@{
                     ok = $true; id = $id
-                    file = (Split-Path -Leaf $script:DataRoot) + "/records/$name"
+                    file = (Split-Path -Leaf $script:DataRoot) + "/$sub/$name"
+                    folder = $sub
                     path = $dest
                 })
                 return
@@ -675,16 +849,22 @@ function Invoke-ApiRoute {
         if (-not (Test-WithinRoot $dest $script:RecDir)) { Send-Error $Stream 400 'Bad Request' 'invalid id'; return }
         switch ($Method) {
             'GET' {
-                if (-not (Test-Path -LiteralPath $dest)) { Send-Error $Stream 404 'Not Found' 'no such record'; return }
-                Send-Json -Stream $Stream -Object ([System.IO.File]::ReadAllText($dest, $Utf8))
+                # Found by id wherever it lives: its project folder, or the old
+                # records\ folder. The cache is tried first (no folder scan);
+                # only a miss, or a cached file that has since gone, rescans.
+                $file = Find-CachedRecordFile $id
+                if (-not $file) { Update-RecordCache; $file = Find-CachedRecordFile $id }
+                if (-not $file) { Send-Error $Stream 404 'Not Found' 'no such record'; return }
+                Send-Json -Stream $Stream -Object ([System.IO.File]::ReadAllText($file, $Utf8))
                 return
             }
             'DELETE' {
                 if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Force }
-                # Conflict copies of the same estimate would otherwise bring it back.
+                # Every copy of the estimate - in its project folder, the old
+                # records\ folder, or an OneDrive conflict copy - or it comes back.
                 Update-RecordCache
                 foreach ($k in @($script:RecordCache.Keys)) {
-                    if ([string]$script:RecordCache[$k].Summary.id -eq $id -and (Test-WithinRoot $k $script:RecDir)) {
+                    if ([string]$script:RecordCache[$k].Summary.id -eq $id -and (Test-WithinRoot $k $script:DataRoot)) {
                         Remove-Item -LiteralPath $k -Force -ErrorAction SilentlyContinue
                     }
                 }
@@ -880,7 +1060,7 @@ try {
 
             try {
                 if ($path.StartsWith('/api')) {
-                    Invoke-ApiRoute -Stream $stream -Method $method -Path $path -Body $body
+                    Invoke-ApiRoute -Stream $stream -Method $method -Path $path -Body $body -Headers $headers
                 } else {
                     Invoke-StaticRoute -Stream $stream -Method $method -Path $path
                 }

@@ -881,9 +881,12 @@
 
       <div class="card mb-0">
         <div class="card-head"><div class="card-title"><span class="dot a"></span>Maintenance</div></div>
-        <p class="card-note">Deleting records removes them from this browser and from your data folder. This cannot be undone.</p>
+        <p class="card-note">Deleting records removes them from this browser and from your data folder. This cannot be undone.
+          <b>Rebuild Excel workbooks</b> rewrites the “project – who did it” workbook in every project folder from the latest estimates,
+          moves estimates saved by an older version into their project folders, and removes workbooks whose estimates are gone.</p>
         <div class="btn-row">
           <button class="btn btn-outline btn-sm" id="maint-resync">↻ Re-sync to disk</button>
+          <button class="btn btn-outline btn-sm" id="maint-workbooks">▦ Rebuild Excel workbooks</button>
           <button class="btn btn-danger btn-sm" id="maint-purge">✕ Delete all FTE records</button>
         </div>
       </div>

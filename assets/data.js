@@ -205,6 +205,39 @@
     return m ? m[1] + m[2] : '';
   }
 
+  /* ---------------------------------------------------- project folders --- */
+
+  /* Every estimate is filed in a folder named after its project, next to an
+     Excel workbook named "<project> - <who did it>.xlsx". These two functions
+     are the only place those names are decided; the launcher only checks them.
+     Characters Windows forbids become spaces, runs of spaces collapse, and a
+     name Windows reserves ("CON", "NUL"...) or one the app uses for its own
+     folders gets a suffix, so any project name maps to one valid folder. */
+  var APP_FOLDERS = ['records', 'projects'];
+
+  function safeItemName(s, fallback, max) {
+    var out = String(s === null || s === undefined ? '' : s)
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (out.length > max) out = out.slice(0, max).trim();
+    out = out.replace(/[. ]+$/, '');
+    if (!out) out = fallback;
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(out)) out += ' (1)';
+    return out;
+  }
+
+  function projectFolderName(projectName) {
+    var name = safeItemName(projectName, 'Untitled project', 80);
+    if (APP_FOLDERS.indexOf(name.toLowerCase()) >= 0) name += ' (project)';
+    return name;
+  }
+
+  /** "Cairo WAN Rollout - Ahmed Elbourgy.xlsx" */
+  function projectWorkbookName(projectName, person) {
+    var who = person ? (person.name || person.email) : '';
+    return safeItemName(projectFolderName(projectName) + ' - ' + safeItemName(who, 'Unknown', 60), 'Estimate', 140) + '.xlsx';
+  }
+
   /* "ahmed.elbourgy.ext@orange.com" -> "Ahmed Elbourgy", for anyone who is
      not in the DPM Directory. */
   function nameFromEmail(email) {
@@ -328,6 +361,8 @@
     TEAM_FOLDER: TEAM_FOLDER,
     teamFolderWebPath: teamFolderWebPath,
     nameFromEmail: nameFromEmail,
+    projectFolderName: projectFolderName,
+    projectWorkbookName: projectWorkbookName,
     HELP: HELP,
     GLOSSARY: GLOSSARY,
     INFORMATIONAL_FIELDS: INFORMATIONAL_FIELDS

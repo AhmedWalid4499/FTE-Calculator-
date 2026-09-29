@@ -287,6 +287,235 @@
     });
   }
 
+  /* ---------------------------------------------- project folders (disk) --- */
+
+  /* Estimates live in one folder per project ("<project>/<id>.json"), next to
+     the project's Excel workbook; earlier versions kept them all in records/,
+     which is still read. The folder name is decided in data.js. */
+  function projectFolderOf(record) {
+    return global.FTEData.projectFolderName(record && record.projectName);
+  }
+
+  function isEstimate(obj) {
+    return !!(obj && typeof obj === 'object' && obj.id && obj.results);
+  }
+
+  /* Visit the entries of a directory handle one at a time. */
+  function eachEntry(dir, fn) {
+    var it = dir.values();
+    function step() {
+      return it.next().then(function (res) {
+        if (res.done) return;
+        return Promise.resolve(fn(res.value)).then(step);
+      });
+    }
+    return step();
+  }
+
+  /* One copy per estimate id - the newest - when OneDrive has kept a
+     conflict copy beside the original. */
+  function newestPerId(items) {
+    var byId = {};
+    (items || []).forEach(function (r) {
+      var cur = byId[r.id];
+      if (!cur || String(r.savedAt || '') > String(cur.savedAt || '') ||
+          String(r.updatedAt || '') > String(cur.updatedAt || '')) byId[r.id] = r;
+    });
+    return Object.keys(byId).map(function (k) { return byId[k]; });
+  }
+
+  function isRecordDir(h) {
+    return h.kind === 'directory' && h.name.toLowerCase() !== 'projects';
+  }
+
+  function parseJsonText(txt) {
+    try { return JSON.parse(String(txt).replace(/^﻿/, '')); } catch (e) { return undefined; }
+  }
+
+  /* Every estimate in the connected folder: each project folder and the old
+     records/ folder. Other files are not estimates and are passed over. Only
+     a file that should have been an estimate (named FTE-..., or in records/)
+     and cannot be read counts as an error - a colleague's unrelated broken
+     JSON must not make every listing look incomplete. */
+  function readAllRecordsFromFolder() {
+    if (!_folderReady || !_dirHandle) return Promise.reject(new Error('no folder connected'));
+    var out = [], errors = 0;
+    return eachEntry(_dirHandle, function (dir) {
+      if (!isRecordDir(dir)) return;
+      var ours = dir.name.toLowerCase() === 'records';
+      return eachEntry(dir, function (h) {
+        if (h.kind !== 'file' || !/\.json$/i.test(h.name)) return;
+        var expected = ours || /^FTE-/i.test(h.name);
+        return h.getFile()
+          .then(function (f) { return f.text(); })
+          .then(function (txt) {
+            var obj = parseJsonText(txt);
+            if (obj === undefined) { if (expected) errors++; return; }
+            if (isEstimate(obj)) out.push(obj);
+          }, function () { if (expected) errors++; });
+      });
+    }).then(function () { return { items: out, errors: errors }; });
+  }
+
+  /* Every file holding estimate `id`: "<id>.json" and OneDrive's conflict
+     copies "<id>-<PC name>.json", in any project folder or records/.
+     Resolves [{ dir, name, record }]. */
+  function copiesInFolder(id) {
+    if (!_folderReady || !_dirHandle) return Promise.resolve([]);
+    var prefix = String(id).toLowerCase();
+    var found = [];
+    return eachEntry(_dirHandle, function (dir) {
+      if (!isRecordDir(dir)) return;
+      return eachEntry(dir, function (h) {
+        var n = h.name.toLowerCase();
+        if (h.kind !== 'file' || n.indexOf(prefix) !== 0 || !/\.json$/.test(n)) return;
+        return h.getFile().then(function (f) { return f.text(); }).then(function (txt) {
+          var obj = parseJsonText(txt);
+          if (isEstimate(obj) && obj.id === id) found.push({ dir: dir, name: h.name, record: obj });
+        }, function () {});
+      });
+    }).then(function () { return found; }, function () { return found; });
+  }
+
+  function newerOf(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    var ka = String(a.updatedAt || a.savedAt || ''), kb = String(b.updatedAt || b.savedAt || '');
+    return kb > ka ? b : a;
+  }
+
+  /* One estimate by id - the newest copy wherever it is. */
+  function readRecordFromFolder(id) {
+    return copiesInFolder(id).then(function (copies) {
+      return copies.reduce(function (best, c) { return newerOf(best, c.record); }, null);
+    });
+  }
+
+  /* Remove every copy of an estimate - its project folder, the old records/
+     folder, conflict copies - or the next read brings it back. */
+  function deleteRecordFromFolder(id) {
+    return copiesInFolder(id).then(function (copies) {
+      return copies.reduce(function (chain, c) {
+        return chain.then(function () { return c.dir.removeEntry(c.name).catch(function () {}); });
+      }, Promise.resolve());
+    }).catch(function () {});
+  }
+
+  function toBase64(bytes) {
+    var s = '';
+    for (var i = 0; i < bytes.length; i += 0x8000) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(s);
+  }
+
+  function fileHeaders(folder, name, type) {
+    var h = { 'Content-Type': type || 'text/plain', 'X-FTE-Folder': encodeURIComponent(folder) };
+    if (name) h['X-FTE-Name'] = encodeURIComponent(name);
+    return h;
+  }
+
+  /* Move estimates still in the old records/ folder into their project
+     folders. Writing an estimate files it in its project folder and removes
+     the records/ copy, so a move is simply a re-write of the same content -
+     nothing about the estimate changes. Resolves with how many moved. */
+  function organiseLegacyRecords() {
+    if (_serverOnline) {
+      return api('/api/records').then(function (res) {
+        var ids = ((res && res.records) || [])
+          .filter(function (s) { return /^records\//i.test(String(s.file || '')); })
+          .map(function (s) { return s.id; });
+        return ids.reduce(function (chain, id) {
+          return chain.then(function (n) {
+            return api('/api/records/' + encodeURIComponent(id))
+              .then(function (rec) { return isEstimate(rec) ? writeRecordToDisk(rec).then(function () { return n + 1; }) : n; })
+              .catch(function () { return n; });
+          });
+        }, Promise.resolve(0));
+      }).catch(function () { return 0; });
+    }
+    if (_folderReady) {
+      return _dirHandle.getDirectoryHandle('records', { create: false }).then(function (dir) {
+        var ids = {};
+        return eachEntry(dir, function (h) {
+          if (h.kind !== 'file' || !/\.json$/i.test(h.name)) return;
+          return h.getFile().then(function (f) { return f.text(); }).then(function (txt) {
+            var obj = parseJsonText(txt);
+            if (isEstimate(obj)) ids[obj.id] = true;
+          }, function () {});
+        }).then(function () {
+          /* Per estimate: the newest of all its copies (a conflict copy may
+             be older than the original) goes into the project folder, then
+             every other copy is removed. */
+          return Object.keys(ids).reduce(function (chain, id) {
+            return chain.then(function (n) {
+              return copiesInFolder(id).then(function (copies) {
+                var best = copies.reduce(function (b, c) { return newerOf(b, c.record); }, null);
+                if (!best) return n;
+                var target = projectFolderOf(best);
+                return writeRecordToDisk(best).then(function () {
+                  return copies.reduce(function (c2, c) {
+                    return c2.then(function () {
+                      if (c.dir.name === target && c.name.toLowerCase() === (id + '.json').toLowerCase()) return;
+                      return c.dir.removeEntry(c.name).catch(function () {});
+                    });
+                  }, Promise.resolve()).then(function () { return n + 1; });
+                }, function () { return n; });
+              });
+            });
+          }, Promise.resolve(0));
+        });
+      }).catch(function () { return 0; });   // no records/ folder: nothing to move
+    }
+    return Promise.resolve(0);
+  }
+
+  /* Every workbook in the project folders: [{ folder, name }]. */
+  function listProjectFiles() {
+    if (_serverOnline) {
+      return api('/api/project-files/list').then(function (res) { return (res && res.files) || []; });
+    }
+    if (_folderReady) {
+      var out = [];
+      return eachEntry(_dirHandle, function (dir) {
+        if (!isRecordDir(dir) || dir.name.toLowerCase() === 'records') return;
+        return eachEntry(dir, function (h) {
+          if (h.kind === 'file' && /\.xlsx$/i.test(h.name)) out.push({ folder: dir.name, name: h.name });
+        });
+      }).then(function () { return out; });
+    }
+    return Promise.resolve([]);
+  }
+
+  /** Write a file (the Excel workbook) into a project folder. Resolves with where it went. */
+  function saveProjectFile(folder, name, data) {
+    var bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    if (_serverOnline) {
+      return api('/api/project-files', { method: 'POST', body: toBase64(bytes), headers: fileHeaders(folder, name) })
+        .then(function (res) { return res && res.file; });
+    }
+    if (_folderReady) {
+      return writeToFolder(folder, name, new Blob([bytes], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      })).then(function (p) { return (_folderName || 'folder') + '/' + p; });
+    }
+    return Promise.reject(new Error('no disk backend available'));
+  }
+
+  /** Remove a file from a project folder, and the folder once it is empty. */
+  function deleteProjectFile(folder, name) {
+    if (_serverOnline) {
+      return api('/api/project-files', { method: 'DELETE', headers: fileHeaders(folder, name) });
+    }
+    if (_folderReady) {
+      return deleteFromFolder(folder, name).then(function () {
+        /* Non-recursive: refused while anything is still in the folder. */
+        return _dirHandle.removeEntry(folder).catch(function () {});
+      });
+    }
+    return Promise.resolve();
+  }
+
   /* ----------------------------------------------------------- status ---- */
 
   function mode() {
@@ -346,12 +575,17 @@
      and browser mode keeps it in IndexedDB for an explicit download later. */
   function writeRecordToDisk(record) {
     if (_serverOnline) {
-      return api('/api/records', { method: 'POST', body: forDisk(record) })
+      return api('/api/records', { method: 'POST', body: forDisk(record),
+                                   headers: fileHeaders(projectFolderOf(record), null, 'application/json') })
         .then(function (res) { return res.file; });
     }
     if (_folderReady) {
-      return writeToFolder('records', record.id + '.json', forDisk(record))
-        .then(function (path) { return (_folderName || 'folder') + '/' + path; });
+      return writeToFolder(projectFolderOf(record), record.id + '.json', forDisk(record))
+        .then(function (path) {
+          /* Saved by an earlier version into records/: this file replaces it. */
+          return deleteFromFolder('records', record.id + '.json')
+            .then(function () { return (_folderName || 'folder') + '/' + path; });
+        });
     }
     return Promise.reject(new Error('no disk backend available'));
   }
@@ -425,13 +659,33 @@
 
   function getRecord(id) { return getLocal(STORE_RECORDS, id); }
 
+  /* ------------------------------------------------ changes on disk ---- */
+
+  /* Told whenever estimates reach disk, or leave it, outside a direct save -
+     a flush once the folder is reachable again, a publish into a newly linked
+     folder, a delete that had to wait. The page uses this to refresh the
+     Excel workbooks of just those projects.
+     written: [record], deleted: [{ id, projectName, createdBy }] */
+  var _changeListeners = [];
+  function onRecordsChanged(fn) { _changeListeners.push(fn); }
+  function emitRecordsChanged(written, deleted) {
+    if (!(written && written.length) && !(deleted && deleted.length)) return;
+    _changeListeners.forEach(function (fn) {
+      try { fn({ written: written || [], deleted: deleted || [] }); } catch (e) { console.error(e); }
+    });
+  }
+
   /* ------------------------------------------------------- tombstones ---- */
 
   /* A delete made while the data folder is out of reach (host stopped,
      folder permission not yet re-granted) cannot touch the file, and the next
-     read of the folder would bring the record straight back. The id is kept
-     here until the delete reaches disk, and pulls ignore it meanwhile. */
+     read of the folder would bring the record straight back. It is kept here
+     until the delete reaches disk, and pulls ignore it meanwhile. Each entry
+     remembers the project and creator too, so the project's workbook can be
+     brought up to date once the delete lands. (Older entries are bare ids.) */
   var TOMBSTONES = '_tombstones';
+
+  function tombstoneId(t) { return typeof t === 'string' ? t : (t && t.id); }
 
   function getTombstones() {
     return getLocal(STORE_SETTINGS, TOMBSTONES)
@@ -439,45 +693,55 @@
       .catch(function () { return []; });
   }
 
-  function setTombstones(ids) { return setSetting(TOMBSTONES, ids); }
+  function setTombstones(list) { return setSetting(TOMBSTONES, list); }
 
-  function addTombstone(id) {
-    return getTombstones().then(function (ids) {
-      if (ids.indexOf(id) < 0) ids.push(id);
-      return setTombstones(ids);
+  function addTombstone(id, meta) {
+    return getTombstones().then(function (list) {
+      if (!list.some(function (t) { return tombstoneId(t) === id; })) {
+        list.push({ id: id, projectName: meta ? meta.projectName : '', createdBy: meta ? (meta.createdBy || null) : null });
+      }
+      return setTombstones(list);
     });
   }
 
   function flushTombstones() {
     if (!_serverOnline && !_folderReady) return Promise.resolve(0);
-    return getTombstones().then(function (ids) {
-      if (!ids.length) return 0;
-      var left = [];
-      return ids.reduce(function (chain, id) {
+    return getTombstones().then(function (list) {
+      if (!list.length) return 0;
+      var left = [], done = [];
+      return list.reduce(function (chain, t) {
         return chain.then(function () {
+          var id = tombstoneId(t);
           var del = _serverOnline
             ? api('/api/records/' + encodeURIComponent(id), { method: 'DELETE' })
-            : deleteFromFolder('records', id + '.json');
-          return del.catch(function () { left.push(id); });
+            : deleteRecordFromFolder(id);
+          return del.then(function () {
+            if (t && typeof t === 'object') done.push(t);
+          }, function () { left.push(t); });
         });
       }, Promise.resolve()).then(function () {
-        return setTombstones(left).then(function () { return ids.length - left.length; });
+        return setTombstones(left).then(function () {
+          emitRecordsChanged([], done);
+          return list.length - left.length;
+        });
       });
     });
   }
 
   /** Resolves { onDisk } - false when the file delete is queued for later. */
   function deleteRecord(id) {
-    return delLocal(STORE_RECORDS, id).then(function () {
-      if (_serverOnline) {
-        return api('/api/records/' + encodeURIComponent(id), { method: 'DELETE' })
-          .then(function () { return { onDisk: true }; },
-                function () { return addTombstone(id).then(function () { return { onDisk: false }; }); });
-      }
-      if (_folderReady) return deleteFromFolder('records', id + '.json').then(function () { return { onDisk: true }; });
-      /* A disk backend exists but is unreachable right now. */
-      if (CAN_REACH_HOST || _dirHandle) return addTombstone(id).then(function () { return { onDisk: false }; });
-      return { onDisk: false };
+    return getLocal(STORE_RECORDS, id).catch(function () { return null; }).then(function (meta) {
+      return delLocal(STORE_RECORDS, id).then(function () {
+        if (_serverOnline) {
+          return api('/api/records/' + encodeURIComponent(id), { method: 'DELETE' })
+            .then(function () { return { onDisk: true }; },
+                  function () { return addTombstone(id, meta).then(function () { return { onDisk: false }; }); });
+        }
+        if (_folderReady) return deleteRecordFromFolder(id).then(function () { return { onDisk: true }; });
+        /* A disk backend exists but is unreachable right now. */
+        if (CAN_REACH_HOST || _dirHandle) return addTombstone(id, meta).then(function () { return { onDisk: false }; });
+        return { onDisk: false };
+      });
     });
   }
 
@@ -506,17 +770,21 @@
         return !(by && _myEmail && by !== _myEmail);
       });
       if (!pending.length) return 0;
+      var written = [];
       return pending.reduce(function (chain, rec) {
-        return chain.then(function (n) {
+        return chain.then(function () {
           return writeRecordToDisk(rec)
             .then(function (file) {
               rec.sync = { state: 'saved', file: file, loc: currentLoc(), at: new Date().toISOString(),
                            pulled: !!(rec.sync && rec.sync.pulled) };
-              return putLocal(STORE_RECORDS, rec).then(function () { return n + 1; });
+              return putLocal(STORE_RECORDS, rec).then(function () { written.push(rec); });
             })
-            .catch(function () { return n; });
+            .catch(function () {});
         });
-      }, Promise.resolve(0));
+      }, Promise.resolve()).then(function () {
+        emitRecordsChanged(written, []);
+        return written.length;
+      });
     });
   }
 
@@ -545,8 +813,8 @@
       });
     }
     if (_folderReady) {
-      return readAllFromFolder('records').then(function (res) {
-        return { items: res.items.filter(function (r) { return r && r.id; }), errors: res.errors, location: _folderName };
+      return readAllRecordsFromFolder().then(function (res) {
+        return { items: newestPerId(res.items), errors: res.errors, location: _folderName };
       });
     }
     return Promise.reject(new Error('no disk backend available'));
@@ -554,7 +822,7 @@
 
   function toIdSet(ids) {
     var set = {};
-    (ids || []).forEach(function (id) { set[id] = true; });
+    (ids || []).forEach(function (t) { var id = tombstoneId(t); if (id) set[id] = true; });
     return set;
   }
 
@@ -664,14 +932,18 @@
         if (me && by && by !== me) return false;
         return !(r.sync && r.sync.state === 'saved' && r.sync.loc === loc);
       });
+      var written = [];
       return mine.reduce(function (chain, rec) {
-        return chain.then(function (n) {
+        return chain.then(function () {
           return writeRecordToDisk(rec).then(function (file) {
             rec.sync = { state: 'saved', file: file, loc: loc, at: new Date().toISOString(), pulled: false };
-            return putLocal(STORE_RECORDS, rec).then(function () { return n + 1; });
-          }).catch(function () { return n; });
+            return putLocal(STORE_RECORDS, rec).then(function () { written.push(rec); });
+          }).catch(function () {});
         });
-      }, Promise.resolve(0));
+      }, Promise.resolve()).then(function () {
+        emitRecordsChanged(written, []);
+        return written.length;
+      });
     });
   }
 
@@ -684,7 +956,7 @@
     var localP = getLocal(STORE_RECORDS, id);
     var diskP;
     if (_serverOnline) diskP = api('/api/records/' + encodeURIComponent(id)).catch(function () { return null; });
-    else if (_folderReady) diskP = readFolderFile('records', id + '.json');
+    else if (_folderReady) diskP = readRecordFromFolder(id);
     else diskP = Promise.resolve(null);
     return Promise.all([diskP, localP]).then(function (res) {
       var disk = res[0], local = res[1];
@@ -939,6 +1211,11 @@
     whoami: whoami,
     setIdentity: setIdentity,
     publishLocalProjects: publishLocalProjects,
+    saveProjectFile: saveProjectFile,
+    deleteProjectFile: deleteProjectFile,
+    organiseLegacyRecords: organiseLegacyRecords,
+    listProjectFiles: listProjectFiles,
+    onRecordsChanged: onRecordsChanged,
 
     saveProject: saveProject,
     listProjects: listProjects,

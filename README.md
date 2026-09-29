@@ -29,8 +29,9 @@ a `.json` file. Which of those you get depends on how you opened it:
 ### Saving to a folder (Chrome / Edge)
 
 Go to **Settings → Connect a folder** and choose where you want the files. From
-then on every calculation is written there automatically, as
-`records/FTE-<date>-<id>.json`, with saved projects in `projects/`.
+then on every calculation is written there automatically, into a folder per
+project together with its Excel workbook (see *How the data folder is
+organised* below), with saved configurations in `projects/`.
 
 Browsers deliberately drop folder permission when you close the tab, so on your
 next visit Settings will show **Reconnect folder** — one click, and anything
@@ -65,13 +66,45 @@ There are two different things the app stores, and they are not the same:
 
 | | What it holds | Where |
 |---|---|---|
-| **FTE Record** | A finished calculation — the inputs *and* the result, frozen | `records/` in the data folder |
+| **FTE Record** | A finished calculation — the inputs *and* the result, frozen | the project's own folder |
 | **Project** | Just the settings you typed, to pick up again later | `projects/` in the data folder |
 
 Every press of **Calculate** writes a new record, so the folder is a full
 history of how an estimate developed. The only fields ever changed on a saved
 record afterwards are its notes and its planned start month — neither affects
 the calculation.
+
+### How the data folder is organised
+
+```
+FTE - Website/                                   (or data/ on this PC)
+  Cairo WAN Rollout/
+    Cairo WAN Rollout - Ahmed Elbourgy.xlsx      the Excel workbook
+    FTE-20260929-101500-ABCD.json                one file per calculation
+    FTE-20261002-093000-QRST.json
+  projects/                                      saved configurations
+```
+
+- Each project gets a folder named after it; every calculation's JSON goes in.
+- Beside them sits one Excel workbook per person who estimated the project,
+  named **`<project> - <who did it>.xlsx`**. It is rebuilt automatically after
+  every calculation or change, from that person's latest estimate — when they
+  have estimated the project as both WAN and LAN, both are in the one workbook,
+  with an overview sheet first. Deleting their last estimate removes it. (Two
+  people with the same display name get their email name added.)
+- The workbook uses the same sheets as **Export to Excel**; the difference is
+  that Export gives the one estimate you are looking at, while the saved
+  workbook always holds the person's latest WAN and/or LAN estimate.
+- If the workbook is open in Excel when it needs updating, the app says so;
+  close it and it is rewritten on the next change, or use **Settings →
+  Maintenance → Rebuild Excel workbooks**. Rebuild also removes workbooks whose
+  estimates have all been deleted.
+- Earlier versions kept every estimate in one `records/` folder. Those are
+  still read and move into their project folder the next time they are saved;
+  **Rebuild Excel workbooks** moves them all at once and creates their
+  workbooks. Older versions of the app only look in `records/`, so make sure
+  everyone has updated first — reload the website, or download the launcher
+  again — or moved estimates disappear from their lists.
 
 ---
 
