@@ -71,6 +71,7 @@ $MimeMap = @{
     '.woff'='font/woff';     '.woff2'='font/woff2'; '.ttf'='font/ttf'
     '.txt' ='text/plain; charset=utf-8'; '.md'='text/plain; charset=utf-8'
     '.map' ='application/json; charset=utf-8'
+    '.pdf' ='application/pdf'
 }
 
 # ------------------------------------------------------------- helpers ----

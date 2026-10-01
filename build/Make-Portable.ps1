@@ -91,6 +91,12 @@ $banner = @'
 '@
 $html = Replace-Once $html '<div class="shell">' ($banner + "<div class=""shell"">")
 
+# The user guide PDF is not folded into the single file (it would double the
+# size). Point its links at the published copy so the emailed build still
+# opens the book - over the internet, unlike the rest of the portable app.
+$guideUrl = 'https://ahmedwalid4499.github.io/FTE-Calculator-/DPM-FTE-Calculator-Guide.pdf'
+$html = $html.Replace('href="DPM-FTE-Calculator-Guide.pdf"', 'href="' + $guideUrl + '"')
+
 $outPath = Join-Path $AppRoot $OutputName
 [System.IO.File]::WriteAllText($outPath, $html, $Utf8)
 

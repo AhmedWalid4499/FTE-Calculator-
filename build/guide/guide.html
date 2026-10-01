@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DPM FTE Calculator — User Guide</title>
+<style>
+  @page { size: A4; margin: 17mm 15mm 16mm; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; box-sizing: border-box; }
+  :root{
+    --blue:#2563eb; --blue-d:#1d4ed8; --amber:#f59e0b;
+    --ink:#0f172a; --ink2:#334155; --ink3:#64748b; --line:#e2e8f0;
+    --bg2:#f8fafc; --bg3:#eef2ff;
+  }
+  html,body{ margin:0; padding:0; }
+  body{
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink); font-size:10.6pt; line-height:1.5;
+  }
+  h1,h2,h3{ color:var(--ink); line-height:1.25; }
+  p{ margin:.5em 0; }
+  a{ color:var(--blue); text-decoration:none; }
+  code,.mono{ font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:9.2pt;
+    background:var(--bg2); border:1px solid var(--line); border-radius:4px; padding:1px 5px; }
+
+  /* ---- cover ---- */
+  .cover{ height:247mm; display:flex; flex-direction:column; justify-content:center;
+    background:linear-gradient(160deg,#2563eb,#1e3a8a); color:#fff; border-radius:16px; padding:22mm 18mm; }
+  .cover .mark{ width:78px; height:78px; margin-bottom:22px; }
+  .cover h1{ color:#fff; font-size:33pt; margin:0 0 6px; letter-spacing:-.4px; }
+  .cover .sub{ font-size:15pt; color:#dbeafe; font-weight:600; margin:0 0 26px; }
+  .cover .lede{ font-size:11.5pt; color:#eff6ff; max-width:150mm; line-height:1.6; }
+  .cover .meta{ margin-top:34px; font-size:10.5pt; color:#bfdbfe; }
+  .cover .pill{ display:inline-block; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.35);
+    border-radius:999px; padding:3px 12px; font-weight:700; color:#fff; }
+
+  .break{ page-break-before:always; }
+  .avoid{ page-break-inside:avoid; }
+
+  /* ---- contents ---- */
+  .toc h2{ font-size:16pt; margin:0 0 10px; }
+  .toc ol{ margin:0; padding-left:0; list-style:none; counter-reset:toc; }
+  .toc li{ counter-increment:toc; padding:7px 0; border-bottom:1px solid var(--line); font-size:11pt; }
+  .toc li::before{ content:counter(toc) ".\00a0\00a0"; color:var(--blue); font-weight:700; }
+  .toc .d{ color:var(--ink3); font-size:9.6pt; display:block; margin-left:20px; }
+
+  /* ---- section headers ---- */
+  .sec-h{ display:flex; align-items:center; gap:12px; border-bottom:3px solid var(--blue);
+    padding-bottom:8px; margin:0 0 14px; }
+  .sec-n{ background:var(--blue); color:#fff; font-weight:800; font-size:14pt; width:34px; height:34px;
+    border-radius:9px; display:flex; align-items:center; justify-content:center; flex:0 0 auto; }
+  .sec-h h1{ font-size:18pt; margin:0; }
+  h2{ font-size:12.5pt; margin:16px 0 4px; color:var(--blue-d); }
+
+  /* ---- figures ---- */
+  figure{ margin:12px 0 4px; page-break-inside:avoid; }
+  figure img{ width:100%; display:block; border:1px solid var(--line); border-radius:9px; }
+  figcaption{ font-size:9.2pt; color:var(--ink3); margin-top:5px; }
+  figcaption b{ color:var(--ink2); }
+
+  /* ---- callouts & lists ---- */
+  .box{ border:1px solid var(--line); border-radius:10px; padding:11px 14px; margin:12px 0; background:#fff; page-break-inside:avoid; }
+  .tip{ background:var(--bg3); border-color:#c7d2fe; }
+  .warn{ background:#fffbeb; border-color:#fde68a; }
+  .box .t{ font-weight:700; margin-bottom:2px; }
+  .tip .t{ color:var(--blue-d); } .warn .t{ color:#b45309; }
+  ol.steps{ margin:8px 0; padding-left:20px; }
+  ol.steps li{ margin:5px 0; }
+  ul.tick{ list-style:none; padding-left:0; margin:8px 0; }
+  ul.tick li{ padding-left:22px; position:relative; margin:5px 0; }
+  ul.tick li::before{ content:"✓"; color:var(--blue); font-weight:800; position:absolute; left:0; }
+  .kgrid{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
+  .kcard{ border:1px solid var(--line); border-radius:9px; padding:9px 11px; background:var(--bg2); page-break-inside:avoid; }
+  .kcard .term{ font-weight:800; color:var(--blue-d); }
+  .kcard .def{ font-size:9.6pt; color:var(--ink2); }
+  .foot{ color:var(--ink3); font-size:8.6pt; text-align:center; margin-top:8mm; border-top:1px solid var(--line); padding-top:5px; }
+  .lead{ font-size:11pt; color:var(--ink2); }
+</style>
+</head>
+<body>
+
+<!-- ============================ COVER ============================ -->
+<section class="cover">
+  <svg class="mark" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+    <rect x="5" y="2.5" width="22" height="27" rx="4" fill="#ffffff"/>
+    <rect x="8" y="6" width="16" height="6" rx="1.5" fill="#bfdbfe"/>
+    <g fill="#2563eb"><rect x="8" y="15.5" width="4.5" height="4.5" rx="1"/><rect x="13.75" y="15.5" width="4.5" height="4.5" rx="1"/><rect x="19.5" y="15.5" width="4.5" height="4.5" rx="1"/><rect x="8" y="22" width="4.5" height="4.5" rx="1"/><rect x="13.75" y="22" width="4.5" height="4.5" rx="1"/></g>
+    <rect x="19.5" y="22" width="4.5" height="4.5" rx="1" fill="#f59e0b"/>
+  </svg>
+  <h1>DPM FTE Calculator</h1>
+  <p class="sub">User Guide</p>
+  <p class="lede">How to estimate the DPM effort and full-time people a WAN or LAN rollout needs — step by step, with every screen explained. Written for Delivery Project Managers; no spreadsheet or training required.</p>
+  <p class="meta"><span class="pill">Version 2.3.0</span>&nbsp;&nbsp;Network Estimator &nbsp;·&nbsp; Orange</p>
+</section>
+
+<!-- ============================ CONTENTS ============================ -->
+<section class="break toc">
+  <h2>What’s inside</h2>
+  <ol>
+    <li>Welcome &amp; the key ideas<span class="d">What the tool does, and the five words you need: MD, FTE, headcount, utilisation, scenario.</span></li>
+    <li>Your first WAN estimate<span class="d">Describe the project, allocate the sites, read the result.</span></li>
+    <li>A LAN estimate<span class="d">Device tiers, the three calculation modes, and delivery stages.</span></li>
+    <li>Comparing scenarios<span class="d">Weigh the same project under different conditions, side by side.</span></li>
+    <li>Records &amp; projects<span class="d">Everything you calculate is saved; reopen, review and reload it.</span></li>
+    <li>Team capacity<span class="d">All active estimates on one calendar, against the size of the team.</span></li>
+    <li>The DPM directory<span class="d">The people you can assign to an estimate.</span></li>
+    <li>Rates &amp; method<span class="d">Where the numbers come from, and a glossary.</span></li>
+    <li>Saving to the SharePoint team folder<span class="d">How the team shares one set of estimates automatically.</span></li>
+    <li>Keeping the app up to date<span class="d">The “what’s new” panel and one-click updates.</span></li>
+  </ol>
+
+  <div class="box tip avoid" style="margin-top:16px">
+    <div class="t">The five words</div>
+    <div class="kgrid" style="margin-bottom:0">
+      <div class="kcard"><span class="term">MD — man-day</span><div class="def">One person working one full day. Every effort in the tool is in man-days.</div></div>
+      <div class="kcard"><span class="term">FTE</span><div class="def">Full-time equivalent: man-days per month ÷ one DPM’s monthly capacity (18 MD by default).</div></div>
+      <div class="kcard"><span class="term">Headcount</span><div class="def">FTE rounded up to whole people. 0.86 FTE still needs 1 person.</div></div>
+      <div class="kcard"><span class="term">Utilisation</span><div class="def">FTE ÷ headcount — how fully the rounded-up team is loaded.</div></div>
+      <div class="kcard"><span class="term">WAN vs LAN</span><div class="def">Two estimators. WAN is priced per product &amp; connectivity mode; LAN per device-count tier.</div></div>
+      <div class="kcard"><span class="term">Record vs project</span><div class="def">A <i>record</i> is a saved result. A <i>project</i> is saved inputs you can reload.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= 1. WELCOME ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">1</div><h1>Welcome &amp; the key ideas</h1></div>
+  <p class="lead">The DPM FTE Calculator turns a project’s size into the effort and the number of full-time people it needs — consistently, and with the arithmetic shown so anyone can follow it.</p>
+
+  <p>You describe a rollout (how long it runs, how many sites, what products or device tiers), and the tool returns the total <b>man-days</b>, the <b>FTE</b>, the <b>headcount</b> and the <b>utilisation</b>, along with how the effort spreads across the months. Every calculation is saved automatically, and — when the team folder is linked — shared with your colleagues.</p>
+
+  <h2>The home screen</h2>
+  <p>The sidebar on the left is how you move around: the two estimators (<b>WAN</b>, <b>LAN</b>), the <b>Team capacity</b> plan, your saved <b>FTE Records</b> and <b>Projects</b>, the <b>DPM Directory</b>, and <b>Rates &amp; Method</b>. The <b>Dashboard</b> opens with what the latest version added and a summary of your most recent estimate.</p>
+  <figure><img src="img/01-dashboard.jpg" alt="Dashboard"><figcaption><b>The Dashboard.</b> A “what’s new” panel at the top, then the headline figures from your latest WAN and LAN estimates.</figcaption></figure>
+
+  <div class="box"><div class="t">Where do I start?</div>Pick <b>WAN Estimator</b> or <b>LAN Estimator</b> from the sidebar depending on the rollout. The next two chapters walk through each.</div>
+</section>
+
+<!-- ======================= 2. WAN ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">2</div><h1>Your first WAN estimate</h1></div>
+  <p class="lead">A WAN estimate prices wide-area rollouts per site, from the product and the connectivity mode.</p>
+
+  <h2>Step 1 — Describe the project</h2>
+  <ol class="steps">
+    <li>Give the project a <b>name</b>. A stable project code (e.g. <span class="mono">DPM-ALS-U4R6</span>) appears top-right and stays with it.</li>
+    <li>Set the <b>duration</b> — type a number of months, or switch to <b>Start / end date</b> and let the tool work it out.</li>
+    <li>Optionally set a <b>planned start</b> month (this places the project on the Team-capacity calendar; it does not change the FTE).</li>
+    <li>Choose the <b>effort distribution</b>: <b>Flat</b> spreads the work evenly; <b>Bell curve</b> ramps up to a mid-project peak and reports the extra <b>Peak FTE</b> that peak needs.</li>
+  </ol>
+  <figure><img src="img/02-wan-form.jpg" alt="WAN project information"><figcaption><b>Project information.</b> Name, status, duration, planned start and the flat / bell-curve choice.</figcaption></figure>
+
+  <h2>Step 2 — Allocate the sites</h2>
+  <p>Set the <b>total sites</b>, then add one <b>allocation row</b> per group of sites that share a product, connectivity mode and complexity. The badge turns green when the rows add up to the total — that’s when you can calculate. (A whole site list can be brought in with <b>Import from Excel</b>.)</p>
+  <figure><img src="img/03-wan-alloc.jpg" alt="WAN site allocation"><figcaption><b>Site allocation by product.</b> Each row is <i>base rate × complexity × sites</i>. The green badge means the allocation balances.</figcaption></figure>
+
+  <h2>Step 3 — Read the result</h2>
+  <p>Press <b>Calculate WAN FTE</b>. The result shows the headline figures and then <b>exactly how the number was reached</b>, step by step — so you can explain or defend any estimate.</p>
+  <figure><img src="img/04-wan-result.jpg" alt="WAN result"><figcaption><b>The result.</b> FTE, headcount, utilisation and total effort up top; the per-row maths and the full working below.</figcaption></figure>
+  <div class="box tip"><div class="t">It’s already saved</div>Every calculation is written to your records (and the data folder) automatically. You don’t need a “save” button — though you can <b>Export to Excel</b> or <b>Email result</b> at the bottom.</div>
+</section>
+
+<!-- ======================= 3. LAN ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">3</div><h1>A LAN estimate</h1></div>
+  <p class="lead">A LAN estimate prices local-network rollouts per site from a <b>device-count tier</b> (how many devices a site has).</p>
+
+  <p>It works like the WAN estimator — name, duration, total sites, then allocation rows — with three differences:</p>
+  <ul class="tick">
+    <li><b>Tiers, not products.</b> Each allocation row picks a size tier (OD/XS, S, M, Large, XL, Campus). If you add no rows, a <b>device count</b> prices the whole project at one tier.</li>
+    <li><b>Three calculation modes.</b> <b>Standard</b> uses the published tier rate card; <b>Non-standard</b> lets you type your own man-days per site; <b>By Stage</b> builds the rate from the delivery stages you select (Design, Planning, Implement, Closing, Controls).</li>
+    <li><b>A fallback override</b> field appears in Non-standard mode for the no-tier-rows case.</li>
+  </ul>
+  <figure><img src="img/05-lan.jpg" alt="LAN parameters and modes"><figcaption><b>LAN parameters.</b> Total sites, the device-count fallback, and the Standard / Non-standard / By&nbsp;Stage mode selector.</figcaption></figure>
+  <div class="box"><div class="t">Which mode?</div>Use <b>Standard</b> for normal work. Use <b>By Stage</b> when only some delivery stages apply. Use <b>Non-standard</b> when you have a negotiated rate the card doesn’t cover.</div>
+</section>
+
+<!-- ======================= 4. COMPARE ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">4</div><h1>Comparing scenarios</h1></div>
+  <p class="lead">Weigh the same project under different conditions — complexity, mode, flat vs bell curve, migration, duration, capacity, the allocation — side by side.</p>
+
+  <ol class="steps">
+    <li>Set up the project as usual, then press <b>➕ Add to comparison</b> (next to Calculate). That snapshots the current form as a <b>scenario</b>.</li>
+    <li>Change one condition and press it again to add another. Repeat for as many as you want to weigh.</li>
+    <li>Read the <b>Compare scenarios</b> panel: the conditions that differ from the first (baseline) are highlighted, and each result shows its change against the baseline (e.g. <b>+50%</b>).</li>
+  </ol>
+  <figure><img src="img/06-compare.jpg" alt="Compare scenarios"><figcaption><b>Three scenarios side by side.</b> “Bell curve” and “4 months” differ from the baseline (highlighted); the 4-month option needs +50% FTE.</figcaption></figure>
+  <ul class="tick">
+    <li><b>Nothing is saved while you experiment</b> — a scenario is only a what-if.</li>
+    <li><b>Load</b> puts a scenario back on the form to tweak; <b>✎</b> renames it; <b>✕</b> removes it.</li>
+    <li>When one is right, its <b>Save</b> button files it as the real estimate. <b>Save comparison</b> keeps the whole set to reopen later with <b>Open saved</b>.</li>
+  </ul>
+</section>
+
+<!-- ======================= 5. RECORDS & PROJECTS ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">5</div><h1>Records &amp; projects</h1></div>
+  <p class="lead">Two different things are saved for you — and it’s worth knowing which is which.</p>
+  <div class="kgrid">
+    <div class="kcard"><span class="term">An FTE record</span><div class="def">A calculated result, frozen with the inputs that produced it. One per calculation; never overwritten.</div></div>
+    <div class="kcard"><span class="term">A project</span><div class="def">A set of inputs you typed, saved under a name so you can reload and re-estimate later.</div></div>
+  </div>
+
+  <h2>FTE Records</h2>
+  <p>Every calculation lands here automatically. Filter by name, creator, type or status; sort; open any record to see its full breakdown; or <b>Export all to Excel</b>. The portfolio charts at the bottom total everything saved.</p>
+  <figure><img src="img/07-records.jpg" alt="FTE Records"><figcaption><b>FTE Records.</b> The filter bar, the saved calculations, and each estimate’s man-days / FTE / headcount.</figcaption></figure>
+  <figure><img src="img/08-record-detail.jpg" alt="Record detail"><figcaption><b>A record’s detail.</b> The same step-by-step working, here showing a migration uplift and the bell-curve <b>Peak FTE</b>. <b>Export to Excel</b> is one click.</figcaption></figure>
+
+  <h2>Projects</h2>
+  <p>Use <b>Save as project</b> on an estimator to store the settings you’ve entered. Reload them any time with <b>Load into estimator</b>.</p>
+  <figure><img src="img/09-projects.jpg" alt="Projects"><figcaption><b>Projects.</b> Saved input configurations you can reload, export or delete.</figcaption></figure>
+</section>
+
+<!-- ======================= 6. CAPACITY ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">6</div><h1>Team capacity</h1></div>
+  <p class="lead">Every active estimate, placed on the calendar from its planned start and added up month by month, compared with the size of the team — so overbooked months show up before they happen.</p>
+
+  <p>Set the window (when it starts and how many months to show) and the team capacity. The cards summarise the <b>team capacity</b>, the <b>peak demand</b> and any <b>overbooked months</b>; the chart plots monthly demand against the capacity line.</p>
+  <figure><img src="img/10-capacity.jpg" alt="Team capacity"><figcaption><b>Team capacity.</b> Demand built from every active estimate vs. the team’s capacity, with the busiest month called out.</figcaption></figure>
+  <ul class="tick">
+    <li>Only estimates with a <b>planned start</b> and <b>Active</b> status appear on the plan.</li>
+    <li>Assign DPMs to an estimate (on the estimator) to see each person’s load by name; unassigned demand still counts against the team.</li>
+  </ul>
+</section>
+
+<!-- ======================= 7. DPM DIRECTORY ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">7</div><h1>The DPM directory</h1></div>
+  <p class="lead">The people you can assign to an estimate.</p>
+  <p>The directory ships with the team pre-loaded. You can add, edit or remove people, import a list (JSON or a two-column CSV), or export the current one. Your changes live in your browser and never change anyone else’s copy; <b>Restore published list</b> puts it back to what the app shipped with.</p>
+  <figure><img src="img/11-dpms.jpg" alt="DPM Directory"><figcaption><b>DPM Directory.</b> Search, add or import people; each is available to assign on an estimate.</figcaption></figure>
+</section>
+
+<!-- ======================= 8. RATES & METHOD ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">8</div><h1>Rates &amp; method</h1></div>
+  <p class="lead">Where every number comes from — no hidden maths.</p>
+  <p>The <b>Rates &amp; Method</b> page lists the published rate cards (WAN per product and connectivity mode; LAN per tier), the By-Stage activity hours, a worked example, and a glossary of every term. Every result in the app also shows its own arithmetic step by step, so the method is never a black box.</p>
+  <figure><img src="img/12-reference.jpg" alt="Rates and method"><figcaption><b>Rates &amp; Method.</b> The LAN delivery-stage hours per tier, and the glossary.</figcaption></figure>
+  <div class="box"><div class="t">The core formula</div>
+    <div class="mono" style="display:block; background:var(--bg2); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin-top:6px; line-height:1.7">
+      row effort&nbsp;&nbsp;= base rate (MD/site) × complexity % × sites<br>
+      total&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= sum of rows (+ migration uplift on WAN)<br>
+      per month&nbsp;&nbsp;= total ÷ duration in months<br>
+      FTE&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= per month ÷ DPM monthly capacity (18 MD)<br>
+      headcount&nbsp;= FTE rounded up to whole people
+    </div>
+  </div>
+  <p>You can change the capacity, the migration uplift and the default complexity under <b>Settings → Calculation assumptions</b>. Changes apply to <i>new</i> calculations only — saved records keep the values that were in force when they ran, so old results stay reproducible.</p>
+  <figure><img src="img/13-settings.jpg" alt="Settings"><figcaption><b>Settings.</b> The calculation assumptions, the result-email recipients, and backup / transfer.</figcaption></figure>
+</section>
+
+<!-- ======================= 9. SHAREPOINT ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">9</div><h1>Saving to the SharePoint team folder</h1></div>
+  <p class="lead">So the whole team works from one shared set of estimates, without anyone typing a path.</p>
+
+  <p>When you run the app with its launcher, it looks for the shared SharePoint folder <b>“FTE - Website”</b> once OneDrive has synced it to your PC, and links it automatically. The chip at the top-right then reads <b>Saving to SharePoint</b>. Every estimate is written there as a file and uploaded by OneDrive, and each project gets its own folder holding its estimates and an Excel workbook named <span class="mono">&lt;Project&gt; - &lt;who did it&gt;</span>.</p>
+
+  <h2>To get connected (once)</h2>
+  <ol class="steps">
+    <li>Open the team’s <b>“FTE - Website”</b> folder on SharePoint.</li>
+    <li>Choose <b>Add shortcut to My files</b> — OneDrive syncs it to your PC within a minute or so.</li>
+    <li>Start the app with <b>Start FTE Calculator.cmd</b>. It links the folder by itself; the chip shows <b>Saving to SharePoint</b>.</li>
+  </ol>
+  <div class="box tip"><div class="t">Until it’s linked</div>Estimates save to a folder on your own PC and nothing is lost — they move to the shared folder the moment it’s linked. You can also link it by hand from <b>Settings</b>.</div>
+  <div class="box warn"><div class="t">One version for everyone</div>The shared folder records the oldest app version allowed to save into it. A copy that’s too old will say so and ask to be updated rather than save the wrong way — which is what the next chapter is about.</div>
+</section>
+
+<!-- ======================= 10. UPDATES ======================= -->
+<section class="break">
+  <div class="sec-h"><div class="sec-n">10</div><h1>Keeping the app up to date</h1></div>
+  <p class="lead">Everyone on the same version, with one click.</p>
+  <p>The top of the Dashboard shows what the current version added and whether a newer one has been published. The app also checks by itself when it starts, every half hour, and when you come back to it; a chip appears in the top bar when an update is available.</p>
+  <figure><img src="img/01-dashboard.jpg" alt="What's new panel"><figcaption><b>The “what’s new” panel.</b> Check any time, or read what the latest version changed.</figcaption></figure>
+  <ul class="tick">
+    <li><b>With the launcher:</b> <b>Update now</b> downloads the new version, installs it and restarts — your estimates and settings are kept.</li>
+    <li><b>On the website:</b> it simply asks you to reload.</li>
+    <li>If a page was open while the app updated, or the folder needs a newer version, the app tells you exactly what to do — reload, restart the launcher, or update.</li>
+  </ul>
+  <div class="box tip"><div class="t">That’s everything</div>You now know every screen. When in doubt, remember the tool always shows its own working — so you can trust, check and explain any number it produces.</div>
+  <p class="foot">DPM FTE Calculator — User Guide · Version 2.3.0 · Network Estimator</p>
+</section>
+
+</body>
+</html>

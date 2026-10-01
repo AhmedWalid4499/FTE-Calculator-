@@ -331,8 +331,32 @@ powershell -ExecutionPolicy Bypass -File build\Make-Portable.ps1
 
 Produces `DPM-FTE-Calculator-portable.html`, a single ~1.6 MB file with
 everything folded in. It can be emailed and opened by double-clicking. It
-needs nothing from the internet to work; the only thing it fetches is the
-release notes on GitHub, to say when a newer version exists.
+needs nothing from the internet to work; the only things it fetches are the
+release notes on GitHub (to say when a newer version exists) and the user
+guide PDF (opened from its “User guide” links, which point to the published
+copy since the PDF is not folded into the single file).
+
+---
+
+## The user guide (PDF)
+
+`DPM-FTE-Calculator-Guide.pdf` at the repository root is an illustrated manual
+for end users. It is linked from the sidebar (**User guide (PDF)**) and the
+Dashboard, served by the launcher and the website, and published on GitHub
+Pages so anyone can download it.
+
+The source is `build/guide/guide.html` with its screenshots in
+`build/guide/img/`. To regenerate the PDF after editing the text — or after
+refreshing the screenshots (recapture them into `build/guide/img/` under the
+same file names) — run:
+
+```
+powershell -ExecutionPolicy Bypass -File build\Make-Guide.ps1
+```
+
+It renders the HTML to the PDF with headless Microsoft Edge, so there is
+nothing extra to install. The screenshots were taken from sample data, so the
+guide shows no real projects, people or machine paths.
 
 ---
 
