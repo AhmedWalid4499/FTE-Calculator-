@@ -14,9 +14,19 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.2.0",
+  "version": "2.3.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.3.0",
+      "date": "2026-10-01",
+      "title": "Compare scenarios side by side",
+      "features": [
+        "Compare scenarios: run several estimates of the same project side by side under different conditions - complexity, mode, flat or bell curve, migration, duration, capacity, the allocation - and see how the man-days and FTE change, with the differences highlighted and the change against the first scenario shown.",
+        "Add a scenario with one click on the WAN or LAN page. Nothing is written to the data folder while you experiment; load any scenario back to tweak it.",
+        "Save the one you want as the estimate, or save the whole comparison in your browser to reopen later."
+      ]
+    },
     {
       "version": "2.2.0",
       "date": "2026-09-29",

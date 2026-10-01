@@ -20,6 +20,7 @@
     settings: Object.assign({}, D.DEFAULT_SETTINGS),
     wan: { rows: [], dpms: [], code: null, record: null, durMode: 'months' },
     lan: { rows: [], dpms: [], code: null, record: null, durMode: 'months' },
+    compare: { wan: [], lan: [] },   // side-by-side scenarios, in memory only until saved
     records: [],
     projects: [],
     selectedProject: null,
@@ -1133,13 +1134,17 @@
     };
   }
 
-  function calculateWan() {
+  /* Read the WAN form, run the engine and wrap the result in a record - the
+     same self-contained snapshot a calculation produces, but WITHOUT saving
+     it. Calculate saves it; "Add to comparison" holds several in memory. Null
+     is returned (and field errors shown) when the form does not validate. */
+  function buildWanRecord() {
     U.clearFieldErrors();
     var input = collectWanInput();
     var result = C.calculateWan(input, S.settings);
-    if (!result.ok) { U.reportErrors(result.errors); return; }
+    if (!result.ok) { U.reportErrors(result.errors); return null; }
 
-    var record = {
+    return {
       id: C.makeRecordId(),
       savedAt: new Date().toISOString(),
       appVersion: D.APP_VERSION,
@@ -1180,20 +1185,15 @@
         peakMonth: result.peakMonth
       }
     };
-
-    S.wan.record = record;
-    renderWanResult(record);
-    renderResultChip(record);
-    persistRecord(record);
   }
 
-  function calculateLan() {
+  function buildLanRecord() {
     U.clearFieldErrors();
     var input = collectLanInput();
     var result = C.calculateLan(input, S.settings);
-    if (!result.ok) { U.reportErrors(result.errors); return; }
+    if (!result.ok) { U.reportErrors(result.errors); return null; }
 
-    var record = {
+    return {
       id: C.makeRecordId(),
       savedAt: new Date().toISOString(),
       appVersion: D.APP_VERSION,
@@ -1233,10 +1233,25 @@
         peakMonth: result.peakMonth
       }
     };
+  }
 
-    S.lan.record = record;
-    renderLanResult(record);
+  function showResult(side, record) {
+    sideState(side).record = record;
+    if (side === 'wan') renderWanResult(record); else renderLanResult(record);
     renderResultChip(record);
+  }
+
+  function calculateWan() {
+    var record = buildWanRecord();
+    if (!record) return;
+    showResult('wan', record);
+    persistRecord(record);
+  }
+
+  function calculateLan() {
+    var record = buildLanRecord();
+    if (!record) return;
+    showResult('lan', record);
     persistRecord(record);
   }
 
@@ -1467,7 +1482,12 @@
     if (!notesChanged && !startChanged) return Promise.resolve(rec);
 
     return DB.getFreshRecord(rec.id).then(function (fresh) {
-      var target = fresh || rec;
+      /* No saved copy means this is a comparison scenario loaded onto the form
+         but never saved. Editing its notes or start month, or exporting it,
+         must not quietly turn it into a saved estimate - only "Save as
+         estimate" does that. */
+      if (!fresh) return { record: rec, written: false };
+      var target = fresh;
       if (notesChanged) target.notes = notes;
       if (startChanged) target.inputs.startMonth = start;
       target.updatedBy = meStamp();
@@ -1594,6 +1614,372 @@
                r.rows.map(function (x) { return x.md; }), 'Man-days', 1);
     U.barChart('l-chart-monthly', r.monthly.map(function (m) { return 'M' + m.month + (m.partial ? '*' : ''); }),
                r.monthly.map(function (m) { return m.md; }), 'MD per month', 1, true);
+  }
+
+  /* ========================================================= comparison == */
+
+  /* Several estimates of the SAME project held side by side so their effort can
+     be compared under different conditions (complexity, mode, flat/bell curve,
+     migration, duration, capacity, allocation). Each scenario is a full record
+     snapshot built with the pure engine; nothing is written to the data folder
+     until the user saves a scenario as the estimate, or saves the comparison.
+     A saved comparison lives in this browser (the settings store), separate
+     from Records and the team plan so neither is polluted by what-if variants. */
+
+  var COMPARISONS_KEY = '_comparisons';
+  function uid() { return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+  function findScenario(side, id) {
+    return S.compare[side].filter(function (s) { return s.id === id; })[0] || null;
+  }
+
+  /* A short name for a new scenario: "Baseline" for the first, otherwise the
+     conditions that differ from it, so the label itself says what changed. */
+  function defaultScenarioLabel(side, rec, index) {
+    if (index === 0) return 'Baseline';
+    var base = S.compare[side][0] && S.compare[side][0].record;
+    var diffs = [];
+    if (base) {
+      var bi = base.inputs, ri = rec.inputs;
+      if ((ri.distribution === 'bell') !== (bi.distribution === 'bell')) diffs.push(ri.distribution === 'bell' ? 'Bell curve' : 'Flat');
+      if (ri.mode !== bi.mode) diffs.push(ri.mode);
+      if (C.num(ri.months) !== C.num(bi.months)) diffs.push(fmt.months(ri.months));
+      if (side === 'wan' && ri.migration !== bi.migration) diffs.push(ri.migration === 'Yes' ? 'With migration' : 'No migration');
+      if (side === 'lan' && (ri.stages || []).join(',') !== (bi.stages || []).join(',')) diffs.push('Other stages');
+      if (C.num(ri.totalSites) !== C.num(bi.totalSites)) diffs.push(fmt.int(ri.totalSites) + ' sites');
+      if (C.num(ri.capacityMdPerMonth) !== C.num(bi.capacityMdPerMonth)) diffs.push(ri.capacityMdPerMonth + ' MD/mo');
+      if (JSON.stringify(ri.allocation || []) !== JSON.stringify(bi.allocation || [])) diffs.push('Adjusted scope');
+    }
+    if (diffs.length) return diffs.slice(0, 2).join(', ');
+    return 'Variant ' + (index + 1);
+  }
+
+  function addToComparison(side) {
+    var rec = side === 'wan' ? buildWanRecord() : buildLanRecord();
+    if (!rec) return;
+    showResult(side, rec);
+    var list = S.compare[side];
+    var label = defaultScenarioLabel(side, rec, list.length);
+    list.push({ id: uid(), label: label, record: rec });
+    renderCompare(side);
+    var card = el(side === 'wan' ? 'w-compare' : 'l-compare');
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    U.toast('Added “' + label + '” — ' + list.length + ' scenario(s) in the comparison.', 'ok');
+  }
+
+  /* ---- the side-by-side table ---- */
+
+  function cmpAllocCell(rec) {
+    var rows = rec.results.rows || [];
+    if (!rows.length) return '<span class="cmp-muted">—</span>';
+    return rows.map(function (x) {
+      var name = x.product ? (x.product + ' — ' + x.connectivityMode) : x.label;
+      return esc(name) + ': ' + fmt.int(x.sites) + ' @ ' + x.complexityPct + '%';
+    }).join('<br>');
+  }
+
+  /* Each entry: { label, html (ready to insert), raw (for the differs-from-
+     baseline test) }. */
+  function cmpConditions(side, rec) {
+    var i = rec.inputs;
+    var out = [
+      { label: 'Duration', html: esc(fmt.months(i.months)) },
+      { label: 'Total sites', html: esc(fmt.int(i.totalSites)) },
+      { label: 'Mode', html: esc(i.mode || '—') },
+      { label: 'Distribution', html: i.distribution === 'bell' ? 'Bell curve' : 'Flat' }
+    ];
+    if (side === 'wan') {
+      out.push({ label: 'Migration uplift', html: i.migration === 'Yes' ? 'Yes' : 'No' });
+    } else {
+      out.splice(2, 0, { label: 'Devices (fallback)', html: esc(fmt.int(i.devices || 0)) });
+      out.push({ label: 'Stages', html: (i.stages && i.stages.length) ? esc(i.stages.join(', ')) : '—' });
+      /* Always emit this row (not only when set) so every LAN scenario has the
+         same rows and the columns stay aligned - comparing "with override" to
+         "default" is a normal use. */
+      out.push({ label: 'Fallback override', html: i.fallbackOverride ? (esc(fmt.md(i.fallbackOverride)) + ' MD/site') : '<span class="cmp-muted">—</span>' });
+    }
+    out.push({ label: 'DPM capacity', html: esc((i.capacityMdPerMonth || '—') + ' MD/mo') });
+    out.push({ label: 'Allocation', html: cmpAllocCell(rec), raw: JSON.stringify(i.allocation || []) });
+    out.forEach(function (c) { if (c.raw === undefined) c.raw = c.html; });
+    return out;
+  }
+
+  function cmpResults(rec) {
+    var r = rec.results, shaped = isShaped(r);
+    return [
+      { label: 'Total man-days', html: esc(fmt.md(r.totalMd) + ' MD'), num: r.totalMd, delta: true },
+      { label: shaped ? 'Average / month' : 'Per month', html: esc(fmt.md(r.mdPerMonth) + ' MD'), num: r.mdPerMonth, delta: true },
+      { label: shaped ? 'FTE (average)' : 'FTE required', html: esc(fmt.fte(r.fte)), num: r.fte, delta: true },
+      { label: 'Headcount', html: esc(r.headcount + ' people'), num: r.headcount },
+      { label: 'Utilisation', html: esc(fmt.pct(r.utilisationPct)), num: r.utilisationPct },
+      { label: 'Peak FTE', html: shaped ? esc(fmt.fte(r.peakFte)) : '—', num: shaped ? r.peakFte : null, delta: true },
+      { label: 'Peak headcount', html: shaped ? esc(r.peakHeadcount + ' people') : '—', num: shaped ? r.peakHeadcount : null }
+    ];
+  }
+
+  function deltaChip(num, baseNum) {
+    if (typeof num !== 'number' || typeof baseNum !== 'number' || baseNum === 0) return '';
+    var d = (num - baseNum) / baseNum * 100;
+    if (Math.abs(d) < 0.5) return '<span class="cmp-delta cmp-same">same</span>';
+    var cls = d > 0 ? 'cmp-up' : 'cmp-down';
+    return '<span class="cmp-delta ' + cls + '">' + (d > 0 ? '+' : '') + d.toFixed(0) + '%</span>';
+  }
+
+  function cmpGroupRow(title, n) {
+    return '<tr class="cmp-group"><td colspan="' + (n + 1) + '">' + esc(title) + '</td></tr>';
+  }
+
+  function compareTableHtml(side, list) {
+    var conds = list.map(function (s) { return cmpConditions(side, s.record); });
+    var reslt = list.map(function (s) { return cmpResults(s.record); });
+    var n = list.length;
+
+    var html = '<div class="cmp-scroll"><table class="cmp-table"><thead><tr><th class="cmp-rowhead"></th>';
+    list.forEach(function (s, idx) {
+      html += '<th class="cmp-colhead"><div class="cmp-scn-label">' + esc(s.label) +
+        (idx === 0 ? ' <span class="tag tag-info">baseline</span>' : '') + '</div>' +
+        '<div class="cmp-scn-acts">' +
+          '<button class="btn btn-ghost btn-xs" data-cmp-scn-act="rename" data-side="' + side + '" data-id="' + s.id + '" title="Rename">✎</button>' +
+          '<button class="btn btn-ghost btn-xs" data-cmp-scn-act="load" data-side="' + side + '" data-id="' + s.id + '" title="Load into the form to tweak">Load</button>' +
+          '<button class="btn btn-ghost btn-xs" data-cmp-scn-act="promote" data-side="' + side + '" data-id="' + s.id + '" title="Save this one as the estimate">Save</button>' +
+          '<button class="btn btn-ghost btn-xs" data-cmp-scn-act="remove" data-side="' + side + '" data-id="' + s.id + '" title="Remove from the comparison">✕</button>' +
+        '</div></th>';
+    });
+    html += '</tr></thead><tbody>';
+
+    html += cmpGroupRow('Conditions', n);
+    conds[0].forEach(function (_, rIdx) {
+      html += '<tr><td class="cmp-rowhead">' + esc(conds[0][rIdx].label) + '</td>';
+      conds.forEach(function (col, cIdx) {
+        var cell = col[rIdx];
+        if (!cell) { html += '<td></td>'; return; }   // defensive: never let an uneven column crash the table
+        var differs = cIdx > 0 && cell.raw !== conds[0][rIdx].raw;
+        html += '<td class="' + (differs ? 'cmp-diff' : '') + '">' + cell.html + '</td>';
+      });
+      html += '</tr>';
+    });
+
+    html += cmpGroupRow('Results', n);
+    reslt[0].forEach(function (_, rIdx) {
+      html += '<tr><td class="cmp-rowhead">' + esc(reslt[0][rIdx].label) + '</td>';
+      reslt.forEach(function (col, cIdx) {
+        var cell = col[rIdx];
+        var chip = (cell.delta && cIdx > 0) ? deltaChip(cell.num, reslt[0][rIdx].num) : '';
+        html += '<td><span class="cmp-val">' + cell.html + '</span>' + chip + '</td>';
+      });
+      html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  function renderCompare(side) {
+    var p = side === 'wan' ? 'w' : 'l';
+    var body = el(p + '-compare-body');
+    if (!body) return;
+    var list = S.compare[side];
+    var countEl = el(p + '-compare-count');
+    if (countEl) countEl.textContent = list.length;
+    qsa('[data-cmp-act="save"][data-side="' + side + '"], [data-cmp-act="clear"][data-side="' + side + '"]').forEach(function (b) {
+      b.disabled = !list.length;
+    });
+    if (!list.length) {
+      body.innerHTML = '<p class="cmp-empty">No scenarios yet. Set the conditions above and press ' +
+        '<b>➕ Add to comparison</b> to snapshot one, then change a condition and add another to see the effort side by side.' +
+        '<span class="cmp-empty-hint">Nothing is written to the data folder until you save a scenario as the estimate, or save the comparison.</span></p>';
+      return;
+    }
+    body.innerHTML = compareTableHtml(side, list);
+  }
+
+  function handleCompareAction(act, side) {
+    if (act === 'save') saveComparison(side);
+    else if (act === 'open') openSavedComparison(side);
+    else if (act === 'clear') clearComparison(side);
+  }
+
+  function handleScenarioAction(act, side, id) {
+    var scn = findScenario(side, id);
+    if (!scn) return;
+    if (act === 'remove') {
+      S.compare[side] = S.compare[side].filter(function (s) { return s.id !== id; });
+      renderCompare(side);
+    } else if (act === 'rename') {
+      U.prompt('Rename scenario', 'A short name for this scenario.', scn.label, { requiredMessage: 'Please enter a name.' })
+        .then(function (name) { if (name) { scn.label = name; renderCompare(side); } });
+    } else if (act === 'load') {
+      applyRecordToForm(side, scn.record);
+      U.toast('Loaded “' + scn.label + '” into the form. Change a condition and press ➕ Add to comparison for a new variant.', 'ok');
+    } else if (act === 'promote') {
+      U.confirm('Save “' + scn.label + '” as the estimate?',
+        'It will be saved for “' + (scn.record.projectName || 'this project') + '” and written to the data folder like a normal calculation. ' +
+        'The other scenarios stay in the comparison.', { confirmLabel: 'Save as estimate' })
+        .then(function (yes) {
+          if (!yes) return;
+          var rec = scn.record;
+          showResult(side, rec);
+          persistRecord(rec);
+        });
+    }
+  }
+
+  function clearComparison(side) {
+    if (!S.compare[side].length) return;
+    U.confirm('Clear the comparison?',
+      'This removes all ' + S.compare[side].length + ' scenario(s) from the side-by-side view. ' +
+      'Saved comparisons and saved estimates are not affected.', { confirmLabel: 'Clear', danger: true })
+      .then(function (yes) { if (yes) { S.compare[side] = []; renderCompare(side); } });
+  }
+
+  /* ---- put a scenario's snapshot back on the form, to tweak and re-add ---- */
+
+  function applyRecordToForm(side, rec) {
+    var i = rec.inputs || {};
+    var st = sideState(side);
+    st.rows = (i.allocation || []).map(function (r) { return Object.assign({}, r); });
+    st.dpms = (rec.dpms || []).map(function (d) { return Object.assign({}, d); });
+    st.code = rec.projectCode || null;
+    st.codeName = (rec.projectName || '').trim();
+
+    if (side === 'wan') {
+      setVal('w-proj-name', rec.projectName || '');
+      if (rec.status) setSeg('w-status', rec.status);
+      if (i.pmRole) setSeg('w-pm-role', i.pmRole);
+      setVal('w-months', i.months || '');
+      setVal('w-start-date', i.startDate || '');
+      setVal('w-end-date', i.endDate || '');
+      setVal('w-start-month', i.startMonth || '');
+      setVal('w-sites', i.totalSites || '');
+      if (i.projectType) setVal('w-type', i.projectType);
+      if (i.migration) setSeg('w-migration', i.migration);
+      if (i.abacos) setSeg('w-abacos', i.abacos);
+      if (i.mode) setSeg('w-mode', i.mode);
+      setSeg('w-dist', i.distribution === 'bell' ? 'bell' : 'flat');
+      setVal('w-notes', rec.notes || '');
+    } else {
+      setVal('l-proj-name', rec.projectName || '');
+      if (rec.status) setSeg('l-status', rec.status);
+      if (i.pmRole) setSeg('l-pm-role', i.pmRole);
+      setVal('l-months', i.months || '');
+      setVal('l-start-date', i.startDate || '');
+      setVal('l-end-date', i.endDate || '');
+      setVal('l-start-month', i.startMonth || '');
+      setVal('l-sites', i.totalSites || '');
+      setVal('l-devices', i.devices || 0);
+      if (i.flan) setSeg('l-flan', i.flan);
+      if (i.mode) setSeg('l-mode', i.mode);
+      setVal('l-fb-ovrd', i.fallbackOverride || '');
+      setSeg('l-dist', i.distribution === 'bell' ? 'bell' : 'flat');
+      setVal('l-notes', rec.notes || '');
+      renderStageChips();
+      var stages = i.stages || [];
+      qsa('#l-stages .stage-chip').forEach(function (n) {
+        var on = stages.indexOf(n.dataset.stage) >= 0;
+        n.classList.toggle('checked', on);
+        n.setAttribute('aria-pressed', String(on));
+      });
+      renderStageSummary();
+    }
+
+    var pill = el(prefix(side) + '-code-pill');
+    if (st.code && pill) { pill.textContent = st.code; pill.classList.remove('hidden'); }
+    switchDuration(side, i.durationSource === 'dates' ? 'dates' : 'months');
+    syncModeUi(side);
+    if (side === 'wan') renderWanRows(); else renderLanRows();
+    renderAssignedDpms(side);
+    showResult(side, rec);
+  }
+
+  /* ---- saved comparisons (this browser) ---- */
+
+  function getSavedComparisons() {
+    return DB.getSettings().then(function (s) {
+      return Array.isArray(s[COMPARISONS_KEY]) ? s[COMPARISONS_KEY] : [];
+    }).catch(function () { return []; });
+  }
+
+  function saveComparison(side) {
+    var list = S.compare[side];
+    if (!list.length) { U.toast('Add at least one scenario first.', 'warn'); return; }
+    var proj = (list[0].record.projectName || '').trim();
+    var suggested = proj ? (proj + ' — comparison') : (side.toUpperCase() + ' comparison');
+    U.prompt('Save comparison', 'Name this comparison so you can reopen it later. It is saved in this browser.', suggested,
+      { requiredMessage: 'Please enter a name.' }).then(function (name) {
+      if (!name) return;
+      return getSavedComparisons().then(function (all) {
+        var obj = {
+          id: uid(), name: name, side: side, savedAt: new Date().toISOString(),
+          savedBy: meStamp(), projectName: proj,
+          scenarios: list.map(function (s) { return { label: s.label, record: s.record }; })
+        };
+        var kept = all.filter(function (c) {
+          return !(c.side === side && String(c.name).toLowerCase() === name.toLowerCase());
+        });
+        kept.push(obj);
+        return DB.setSetting(COMPARISONS_KEY, kept).then(function () {
+          U.toast('Comparison “' + name + '” saved. Reopen it with “Open saved”.', 'ok');
+        });
+      });
+    });
+  }
+
+  function savedListHtml(list, side) {
+    var rows = list.slice().sort(function (a, b) { return String(b.savedAt).localeCompare(String(a.savedAt)); });
+    return '<div class="cmp-saved-list">' + rows.map(function (c) {
+      return '<label class="cmp-saved-row"><input type="radio" name="cmppick" value="' + esc(c.id) + '">' +
+        '<span class="cmp-saved-main"><b>' + esc(c.name) + '</b>' +
+        '<span class="cmp-saved-meta">' + (c.scenarios || []).length + ' scenario(s) · ' + esc(fmt.dateTime(c.savedAt)) + '</span></span>' +
+        '<button type="button" class="icon-btn" data-cmpdel="' + esc(c.id) + '" data-side="' + side + '" title="Delete this saved comparison">🗑</button>' +
+        '</label>';
+    }).join('') + '</div><p class="dlg-error" hidden role="alert"></p>';
+  }
+
+  function fillSavedList(backdrop, side) {
+    getSavedComparisons().then(function (all) {
+      var mine = all.filter(function (c) { return c.side === side; });
+      var bodyEl = qs('.dlg-body', backdrop);
+      if (!bodyEl) return;
+      bodyEl.innerHTML = mine.length ? savedListHtml(mine, side) : '<p>No saved comparisons left.</p>';
+    });
+  }
+
+  function openSavedComparison(side) {
+    getSavedComparisons().then(function (all) {
+      var mine = all.filter(function (c) { return c.side === side; });
+      if (!mine.length) { U.toast('No saved comparisons yet. Use “Save comparison” first.', 'warn'); return; }
+      U.dialog({
+        title: 'Open saved comparison', confirmLabel: 'Open', bodyHtml: savedListHtml(mine, side),
+        collect: function (bd) {
+          var sel = qs('input[name="cmppick"]:checked', bd);
+          if (!sel) {
+            var err = qs('.dlg-error', bd);
+            if (err) { err.textContent = 'Pick a comparison to open.'; err.hidden = false; }
+            return false;
+          }
+          return sel.value;
+        }
+      }).then(function (id) { if (id) loadSavedComparison(side, id); });
+    });
+  }
+
+  function loadSavedComparison(side, id) {
+    getSavedComparisons().then(function (all) {
+      var c = all.filter(function (x) { return x.id === id; })[0];
+      if (!c) { U.toast('That comparison is no longer available.', 'warn'); return; }
+      S.compare[side] = (c.scenarios || []).map(function (s) { return { id: uid(), label: s.label, record: s.record }; });
+      renderCompare(side);
+      if (S.compare[side].length) applyRecordToForm(side, S.compare[side][0].record);
+      var card = el((side === 'wan' ? 'w' : 'l') + '-compare');
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      U.toast('Opened “' + c.name + '” — ' + S.compare[side].length + ' scenario(s).', 'ok');
+    });
+  }
+
+  function deleteSavedComparison(id) {
+    return getSavedComparisons().then(function (all) {
+      return DB.setSetting(COMPARISONS_KEY, all.filter(function (c) { return c.id !== id; }));
+    });
   }
 
   /* =========================================================== dashboard = */
@@ -3798,6 +4184,18 @@
 
       var storageAct = e.target.closest('[data-storage-act]');
       if (storageAct) { handleStorageAction(storageAct.dataset.storageAct, storageAct); return; }
+
+      var cmpDel = e.target.closest('[data-cmpdel]');
+      if (cmpDel) {
+        e.preventDefault();
+        var bd = cmpDel.closest('.dlg-backdrop');
+        deleteSavedComparison(cmpDel.dataset.cmpdel).then(function () { if (bd) fillSavedList(bd, cmpDel.dataset.side); });
+        return;
+      }
+      var cmpAct = e.target.closest('[data-cmp-act]');
+      if (cmpAct) { handleCompareAction(cmpAct.dataset.cmpAct, cmpAct.dataset.side); return; }
+      var scnAct = e.target.closest('[data-cmp-scn-act]');
+      if (scnAct) { handleScenarioAction(scnAct.dataset.cmpScnAct, scnAct.dataset.side, scnAct.dataset.id); return; }
     });
 
     el('theme-toggle').addEventListener('click', function () {
@@ -3822,6 +4220,7 @@
       syncActiveNotes('wan').then(function () { EX.exportRecord(S.wan.record); });
     });
     el('w-save-project').addEventListener('click', saveCurrentAsProject);
+    el('w-add-compare').addEventListener('click', function () { ensureIdentity().then(function () { addToComparison('wan'); }); });
     el('w-email').addEventListener('click', function () { syncActiveNotes('wan').then(function () { emailResult('wan'); }); });
     el('w-assign-dpms').addEventListener('click', function () { openDpmPicker('wan'); });
     el('w-sites').addEventListener('input', renderWanAllocBadge);
@@ -3848,6 +4247,7 @@
       syncActiveNotes('lan').then(function () { EX.exportRecord(S.lan.record); });
     });
     el('l-save-project').addEventListener('click', saveCurrentAsProject);
+    el('l-add-compare').addEventListener('click', function () { ensureIdentity().then(function () { addToComparison('lan'); }); });
     el('l-email').addEventListener('click', function () { syncActiveNotes('lan').then(function () { emailResult('lan'); }); });
     el('l-assign-dpms').addEventListener('click', function () { openDpmPicker('lan'); });
     el('l-sites').addEventListener('input', renderLanAllocBadge);
@@ -4036,6 +4436,8 @@
     syncModeUi('lan');
     renderAssignedDpms('wan');
     renderAssignedDpms('lan');
+    renderCompare('wan');
+    renderCompare('lan');
     renderDpmDirectory();
 
     DB.onStatusChange(renderStorageStatus);
@@ -4047,6 +4449,7 @@
       .then(function () { return DB.getSettings(); })
       .then(function (settings) {
         S.settings = Object.assign({}, D.DEFAULT_SETTINGS, settings);
+        delete S.settings[COMPARISONS_KEY];   // saved comparisons live in the settings store but are not app settings
         setVal('w-add-complexity', S.settings.defaultComplexity);
         setVal('l-add-complexity', S.settings.defaultComplexity);
         updateMigrationHelp();

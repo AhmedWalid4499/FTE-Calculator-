@@ -197,6 +197,29 @@ drop-downs of the exact rate-card names.
 
 ---
 
+## Comparing scenarios
+
+To weigh the same project under different conditions, use **➕ Add to
+comparison** on the WAN or LAN page instead of (or as well as) **Calculate**.
+It snapshots the current form — complexity, mode, flat or bell curve,
+migration, duration, capacity and the allocation — as a *scenario* and lists
+them side by side in the **Compare scenarios** panel.
+
+- Change a condition and add another scenario to see the effect. The
+  conditions that differ from the first (baseline) scenario are highlighted,
+  and each result shows its change against the baseline (for example `+30%`).
+- **Nothing is written to the data folder while you experiment.** A scenario
+  is only a what-if until you act on it.
+- **Load** puts a scenario back on the form so you can tweak it; **✎** renames
+  it; **✕** removes it from the comparison.
+- **Save** (on a scenario) files that one as the real estimate — exactly like
+  pressing Calculate, so it lands in the data folder and the project workbook.
+- **Save comparison** keeps the whole set to reopen later with **Open saved**.
+  Saved comparisons live in your browser on this PC; they are kept separate
+  from Records and the Team-capacity plan so neither is cluttered by what-ifs.
+
+---
+
 ## Updates
 
 The top of the **Dashboard** shows what the current version added, and

@@ -306,6 +306,18 @@
         </div>
       </div>
 
+      <div class="card compare-card" id="w-compare" data-side="wan">
+        <div class="card-head">
+          <div class="card-title"><span class="dot b"></span>Compare scenarios <span class="tag tag-muted" id="w-compare-count">0</span></div>
+          <div class="btn-row">
+            <button class="btn btn-ghost btn-sm" data-cmp-act="open" data-side="wan">📂 Open saved</button>
+            <button class="btn btn-ghost btn-sm" data-cmp-act="save" data-side="wan">💾 Save comparison</button>
+            <button class="btn btn-ghost btn-sm" data-cmp-act="clear" data-side="wan">Clear all</button>
+          </div>
+        </div>
+        <div id="w-compare-body"></div>
+      </div>
+
       <div class="card">
         <div class="card-head"><div class="card-title"><span class="dot c"></span>Notes</div></div>
         <div class="field mb-0">
@@ -318,6 +330,7 @@
       <div class="divider"><span>Actions</span></div>
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="w-calculate">Calculate WAN FTE</button>
+        <button class="btn btn-outline" id="w-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
         <button class="btn btn-outline" id="w-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="w-email" data-help="emailResult">✉ Email result</button>
         <button class="btn btn-ghost" id="w-save-project">⊞ Save as project</button>
@@ -515,6 +528,18 @@
         </div>
       </div>
 
+      <div class="card compare-card" id="l-compare" data-side="lan">
+        <div class="card-head">
+          <div class="card-title"><span class="dot b"></span>Compare scenarios <span class="tag tag-muted" id="l-compare-count">0</span></div>
+          <div class="btn-row">
+            <button class="btn btn-ghost btn-sm" data-cmp-act="open" data-side="lan">📂 Open saved</button>
+            <button class="btn btn-ghost btn-sm" data-cmp-act="save" data-side="lan">💾 Save comparison</button>
+            <button class="btn btn-ghost btn-sm" data-cmp-act="clear" data-side="lan">Clear all</button>
+          </div>
+        </div>
+        <div id="l-compare-body"></div>
+      </div>
+
       <div class="card">
         <div class="card-head"><div class="card-title"><span class="dot c"></span>Notes</div></div>
         <div class="field mb-0">
@@ -527,6 +552,7 @@
       <div class="divider"><span>Actions</span></div>
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="l-calculate">Calculate LAN FTE</button>
+        <button class="btn btn-outline" id="l-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
         <button class="btn btn-outline" id="l-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="l-email" data-help="emailResult">✉ Email result</button>
         <button class="btn btn-ghost" id="l-save-project">⊞ Save as project</button>
