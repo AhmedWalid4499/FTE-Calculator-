@@ -1982,6 +1982,225 @@
     });
   }
 
+  /* ============================================================== AI ====== */
+
+  /* The assistant: a chat drawer that answers questions, gives an opinion on a
+     result, and auto-fills the estimator from an uploaded file. Everything
+     routes through FTEAi, which calls the launcher's /api/ai proxy; it only
+     works in host mode, so the whole UI is hidden unless a key is configured. */
+  var AI = global.FTEAi;
+
+  function aiInit() {
+    S.ai = { available: false, open: false, busy: false, history: [], fileSide: null };
+    if (!AI || !AI.canReachHost) { aiReflect(); return; }
+    AI.getStatus().then(function (st) { S.ai.available = !!st.available; aiReflect(); });
+  }
+
+  function aiReflect() {
+    var on = !!(S.ai && S.ai.available);
+    var chip = el('ai-toggle'); if (chip) chip.classList.toggle('hidden', !on);
+    qsa('.ai-only').forEach(function (b) { b.classList.toggle('hidden', !on); });
+  }
+
+  function aiOpen() {
+    if (!S.ai.available) return;
+    S.ai.open = true; el('ai-drawer').classList.remove('hidden'); aiRender();
+    setTimeout(function () { var t = el('ai-text'); if (t) t.focus(); }, 30);
+  }
+  function aiClose() { S.ai.open = false; el('ai-drawer').classList.add('hidden'); }
+  function aiToggle() { if (S.ai.open) aiClose(); else aiOpen(); }
+
+  /* Escape everything, then allow only **bold** and leave line breaks (the
+     container is pre-wrap). No other HTML from the model is rendered. */
+  function aiFormat(text) {
+    return esc(text).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  }
+
+  function aiRender() {
+    var host = el('ai-msgs'); if (!host) return;
+    if (!S.ai.history.length && !S.ai.busy) {
+      host.innerHTML = '<div class="ai-empty"><span class="ai-spark">✨</span>Ask about this estimate, how to set one up, or whether the numbers look right — or attach a spreadsheet, PDF or photo and I\'ll fill the form for you.</div>';
+      return;
+    }
+    var html = S.ai.history.map(function (m) {
+      if (m.role === 'note') return '<div class="ai-msg note">' + esc(m.text) + '</div>';
+      return '<div class="ai-msg ' + (m.role === 'user' ? 'user' : 'bot') + '">' + aiFormat(m.text) + '</div>';
+    }).join('');
+    if (S.ai.busy) html += '<div class="ai-msg bot typing">…thinking…</div>';
+    host.innerHTML = html;
+    host.scrollTop = host.scrollHeight;
+  }
+
+  function aiRecordSummary(rec) {
+    var i = rec.inputs || {}, r = rec.results || {};
+    var lines = [
+      rec.type + ' estimate "' + rec.projectName + '" (' + rec.projectCode + ')',
+      'Duration ' + i.months + ' months, ' + i.totalSites + ' sites, ' + i.mode + ' mode, ' +
+        (i.distribution === 'bell' ? 'bell-curve' : 'flat') + ' distribution' + (i.migration ? (', migration ' + i.migration) : ''),
+      'Rows:'
+    ];
+    (r.rows || []).forEach(function (x) {
+      var nm = x.product ? (x.product + ' / ' + x.connectivityMode) : x.label;
+      lines.push('  - ' + nm + ': ' + x.sites + ' sites @ ' + x.complexityPct + '% = ' + x.md + ' MD');
+    });
+    lines.push('Result: ' + r.totalMd + ' MD total, ' + r.mdPerMonth + ' MD/month, ' + r.fte + ' FTE avg, headcount ' + r.headcount + ', utilisation ' + r.utilisationPct + '%');
+    if (r.usingBell) lines.push('Bell-curve peak: ' + r.peakFte + ' FTE (' + r.peakHeadcount + ' people) in month ' + r.peakMonth);
+    if (rec.notes) lines.push('Notes: ' + rec.notes);
+    return lines.join('\n');
+  }
+
+  function aiContext() {
+    var page = (qs('.page.active') || {}).id;
+    var rec = (page === 'page-lan' && S.lan.record) ? S.lan.record
+            : (page === 'page-wan' && S.wan.record) ? S.wan.record
+            : (S.wan.record || S.lan.record);
+    return rec ? aiRecordSummary(rec) : '';
+  }
+
+  function aiSend(text) {
+    if (S.ai.busy || !text) return;
+    S.ai.history.push({ role: 'user', text: text });
+    S.ai.busy = true; aiRender();
+    var hist = S.ai.history
+      .filter(function (m) { return m.role === 'user' || m.role === 'assistant'; })
+      .map(function (m) { return { role: m.role, content: m.raw || m.text }; });
+    AI.chat(hist, aiContext()).then(function (res) {
+      S.ai.busy = false;
+      S.ai.history.push({ role: 'assistant', text: res.text || '(no answer)', raw: res.raw && res.raw.content });
+      aiRender();
+    }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
+  }
+
+  function aiOpinion(side) {
+    var rec = sideState(side).record;
+    if (!rec) { U.toast('Run a ' + side.toUpperCase() + ' calculation first.', 'warn'); return; }
+    aiOpen();
+    S.ai.history.push({ role: 'note', text: 'Opinion on "' + rec.projectName + '"' });
+    S.ai.busy = true; aiRender();
+    AI.opinion(aiRecordSummary(rec)).then(function (txt) {
+      S.ai.busy = false; S.ai.history.push({ role: 'assistant', text: txt || '(no answer)' }); aiRender();
+    }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
+  }
+
+  function aiBestName(value, list) {
+    if (!value) return null;
+    var v = String(value).trim().toLowerCase();
+    var exact = list.filter(function (x) { return x.toLowerCase() === v; })[0];
+    if (exact) return exact;
+    return list.filter(function (x) { return x.toLowerCase().indexOf(v) >= 0 || v.indexOf(x.toLowerCase()) >= 0; })[0] || null;
+  }
+
+  /* Put an extracted project onto the estimator form. Names are matched to the
+     exact rate-card entries; anything unmatched is kept verbatim so the user
+     (and the allocation badge) can see and fix it. */
+  function applyAiExtraction(data, preferSide) {
+    var side = (data.side === 'lan' || data.side === 'wan') ? data.side : (preferSide || 'wan');
+    gotoPage(side);
+    var p = prefix(side), st = sideState(side), rows = [];
+
+    if (data.projectName) setVal(p + '-proj-name', data.projectName);
+    if (data.durationMonths > 0) { st.durMode = 'months'; switchDuration(side, 'months'); setVal(p + '-months', data.durationMonths); }
+    if (data.totalSites > 0) setVal(p + '-sites', data.totalSites);
+    setSeg(p + '-dist', data.distribution === 'bell' ? 'bell' : 'flat');
+
+    if (side === 'wan') {
+      setSeg('w-mode', data.mode === 'Non-standard' ? 'Non-standard' : 'Standard');
+      if (data.migration) setSeg('w-migration', data.migration === 'Yes' ? 'Yes' : 'No');
+      (data.allocation || []).forEach(function (a) {
+        if (!(a.sites > 0)) return;
+        rows.push({
+          product: aiBestName(a.product, D.PRODUCTS) || a.product || D.PRODUCTS[0],
+          connectivityMode: aiBestName(a.connectivityMode, D.CONNECTIVITY_MODES) || a.connectivityMode || D.CONNECTIVITY_MODES[0],
+          sites: a.sites, complexityPct: a.complexityPct > 0 ? a.complexityPct : 100,
+          overrideMdPerSite: a.overrideMdPerSite || null
+        });
+      });
+      st.rows = rows; syncModeUi('wan'); renderWanRows(); renderWanAllocBadge();
+    } else {
+      setSeg('l-mode', (data.mode === 'Non-standard' || data.mode === 'By Stage') ? data.mode : 'Standard');
+      if (data.devices > 0) setVal('l-devices', data.devices);
+      (data.allocation || []).forEach(function (a) {
+        if (!(a.sites > 0)) return;
+        rows.push({
+          tierLabel: aiBestName(a.tierLabel, D.LAN_TIER_LABELS) || a.tierLabel || D.LAN_TIER_LABELS[0],
+          sites: a.sites, complexityPct: a.complexityPct > 0 ? a.complexityPct : 100,
+          overrideMdPerSite: a.overrideMdPerSite || null
+        });
+      });
+      st.rows = rows;
+      renderStageChips();
+      if (data.stages && data.stages.length) {
+        var want = data.stages.map(function (s) { return String(s).toLowerCase(); });
+        qsa('#l-stages .stage-chip').forEach(function (n) {
+          var on = want.indexOf(String(n.dataset.stage).toLowerCase()) >= 0;
+          n.classList.toggle('checked', on); n.setAttribute('aria-pressed', String(on));
+        });
+        renderStageSummary();
+      }
+      syncModeUi('lan'); renderLanRows(); renderLanAllocBadge();
+    }
+    if (data.notes) setVal(p + '-notes', data.notes);
+    st.code = null; ensureCode(side);
+    return { side: side, summary: rows.length + ' row(s), ' + (data.totalSites || '?') + ' sites' };
+  }
+
+  function aiAutofill(files, side) {
+    if (!files || !files.length) return;
+    var total = 0; Array.prototype.forEach.call(files, function (f) { total += f.size || 0; });
+    if (total > 12 * 1024 * 1024) { U.toast('That file is large (over 12 MB). Try a smaller or compressed version.', 'warn'); return; }
+    aiOpen();
+    var names = Array.prototype.map.call(files, function (f) { return f.name; }).join(', ');
+    S.ai.history.push({ role: 'note', text: 'Reading ' + names + '…' });
+    S.ai.busy = true; aiRender();
+    AI.extract(files).then(function (out) {
+      S.ai.busy = false;
+      if (!out.data) { S.ai.history.push({ role: 'assistant', text: out.text || 'I couldn\'t read a project out of that file. Try a clearer site list or tell me the details here.' }); aiRender(); return; }
+      var applied = applyAiExtraction(out.data, side);
+      var msg = 'Filled the ' + applied.side.toUpperCase() + ' form — ' + applied.summary + '.';
+      var asum = out.data.assumptions || [];
+      if (asum.length) msg += '\n\n**I assumed / couldn\'t find:**\n' + asum.map(function (a) { return '• ' + a; }).join('\n');
+      msg += '\n\nCheck the fields, then press Calculate.';
+      S.ai.history.push({ role: 'assistant', text: msg });
+      aiRender();
+    }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
+  }
+
+  function bindAiEvents() {
+    var toggle = el('ai-toggle'); if (toggle) toggle.addEventListener('click', aiToggle);
+    var close = el('ai-close'); if (close) close.addEventListener('click', aiClose);
+    var clear = el('ai-clear'); if (clear) clear.addEventListener('click', function () { S.ai.history = []; aiRender(); });
+    var form = el('ai-form');
+    if (form) form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var t = el('ai-text'); var v = (t.value || '').trim(); if (!v) return;
+      t.value = ''; t.style.height = 'auto'; aiSend(v);
+    });
+    var text = el('ai-text');
+    if (text) {
+      text.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); el('ai-form').dispatchEvent(new Event('submit', { cancelable: true })); }
+      });
+      text.addEventListener('input', function () { this.style.height = 'auto'; this.style.height = Math.min(120, this.scrollHeight) + 'px'; });
+    }
+    var fileInput = el('ai-file');
+    var attach = el('ai-attach');
+    if (attach) attach.addEventListener('click', function () {
+      var page = (qs('.page.active') || {}).id;
+      S.ai.fileSide = page === 'page-lan' ? 'lan' : (page === 'page-wan' ? 'wan' : null);
+      fileInput.click();
+    });
+    if (fileInput) fileInput.addEventListener('change', function () {
+      if (this.files && this.files.length) aiAutofill(this.files, S.ai.fileSide);
+      this.value = ''; S.ai.fileSide = null;
+    });
+    ['wan', 'lan'].forEach(function (side) {
+      var af = el(side[0] + '-ai-autofill');
+      if (af) af.addEventListener('click', function () { S.ai.fileSide = side; fileInput.click(); });
+      var op = el(side[0] + '-ai-opinion');
+      if (op) op.addEventListener('click', function () { aiOpinion(side); });
+    });
+  }
+
   /* =========================================================== dashboard = */
 
   function kpiCard(cls, label, value, sub, helpKey, small) {
@@ -4432,6 +4651,8 @@
     populateSelects();
     renderStageChips();
     bindEvents();
+    bindAiEvents();
+    aiInit();
     syncModeUi('wan');
     syncModeUi('lan');
     renderAssignedDpms('wan');

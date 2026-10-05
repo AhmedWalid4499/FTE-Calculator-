@@ -617,6 +617,105 @@ function Install-FromGit {
     return $now
 }
 
+# ------------------------------------------------------------------- AI ----
+# The AI features (upload-to-autofill, result opinion, chat) call the Anthropic
+# API. The key is a SHARED SECRET and this repo is PUBLIC, so the key is never
+# in the app's files or sent to the browser: the launcher holds it and proxies
+# the calls. The key is read from, first match wins:
+#   1. the ANTHROPIC_API_KEY environment variable (per machine),
+#   2. %LOCALAPPDATA%\DPM-FTE-Calculator\anthropic-key.txt (per machine),
+#   3. <data folder>\.config\anthropic-key.txt - set once in the shared team
+#      folder and it serves everyone whose launcher points at that folder.
+$script:AiModelDefault = 'claude-opus-5-5'
+$script:AiEndpoint = 'https://api.anthropic.com/v1/messages'
+
+function Get-AiConfigDir { return (Join-Path $script:DataRoot '.config') }
+function Get-SharedKeyPath { return (Join-Path (Get-AiConfigDir) 'anthropic-key.txt') }
+
+function Read-KeyFile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    try { return ([System.IO.File]::ReadAllText($Path)).Trim() } catch { return '' }
+}
+
+function Get-AnthropicKey {
+    $env1 = [Environment]::GetEnvironmentVariable('ANTHROPIC_API_KEY')
+    if ($env1 -and $env1.Trim()) { return $env1.Trim() }
+    $local = Join-Path $env:LOCALAPPDATA 'DPM-FTE-Calculator\anthropic-key.txt'
+    $k = Read-KeyFile $local; if ($k) { return $k }
+    return (Read-KeyFile (Get-SharedKeyPath))
+}
+
+function Get-AiJson {
+    $cfg = Join-Path (Get-AiConfigDir) 'ai.json'
+    if (Test-Path -LiteralPath $cfg) {
+        try { return (Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {}
+    }
+    return $null
+}
+
+function Get-AiModel {
+    $m = [string](Get-Prop (Get-AiJson) 'model')
+    if ($m) { return $m }
+    return $script:AiModelDefault
+}
+
+# Some keys (org / "user" keys) are not scoped to a single workspace; Anthropic
+# then needs an anthropic-workspace-id header. Provide it via the env var
+# ANTHROPIC_WORKSPACE_ID or "workspaceId" in .config\ai.json. A workspace-scoped
+# key needs none, so this is blank by default.
+function Get-AnthropicWorkspace {
+    $env1 = [Environment]::GetEnvironmentVariable('ANTHROPIC_WORKSPACE_ID')
+    if ($env1 -and $env1.Trim()) { return $env1.Trim() }
+    return [string](Get-Prop (Get-AiJson) 'workspaceId')
+}
+
+# POST a Messages-API body to Anthropic through curl, returning @{ status; body }.
+# The key goes in a temporary curl --config file, never on the command line (so
+# it is not visible in the process list). Unlike Invoke-Curl this KEEPS the
+# response body on 4xx/5xx, so the API's own error (bad key, rate limit) can be
+# relayed to the browser.
+function Invoke-Anthropic {
+    param([string]$Key, [string]$BodyJson, [string]$Workspace = '', [int]$TimeoutSec = 120)
+    if (-not (Test-Path -LiteralPath $script:Curl)) {
+        return @{ status = 0; body = '{"error":{"message":"curl.exe is not available on this PC."}}' }
+    }
+    $bodyFile = [IO.Path]::GetTempFileName()
+    $outFile  = [IO.Path]::GetTempFileName()
+    $cfgFile  = [IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($bodyFile, $BodyJson, $Utf8)
+    $fwd = { param($p) $p -replace '\\', '/' }
+    # curl config: unquoted paths (forward slashes, no spaces in temp paths);
+    # the key is a quoted header value. The key has no quotes/backslashes.
+    $cfg = @(
+        'silent', 'show-error', 'location',
+        "max-time $TimeoutSec",
+        "url = $script:AiEndpoint",
+        'header = "content-type: application/json"',
+        'header = "anthropic-version: 2023-06-01"',
+        ('header = "x-api-key: ' + $Key + '"'),
+        $(if ($Workspace) { 'header = "anthropic-workspace-id: ' + $Workspace + '"' } else { '' }),
+        ("data-binary = @" + (& $fwd $bodyFile)),
+        ("output = " + (& $fwd $outFile)),
+        'write-out = "%{http_code}"'
+    ) -join "`n"
+    [System.IO.File]::WriteAllText($cfgFile, $cfg, (New-Object System.Text.ASCIIEncoding))
+    $old = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try {
+        $code = & $script:Curl --config $cfgFile
+        $body = ''
+        if (Test-Path -LiteralPath $outFile) { $body = [System.IO.File]::ReadAllText($outFile, $Utf8) }
+        $status = 0; [void][int]::TryParse(([string]$code).Trim(), [ref]$status)
+        if ($status -eq 0) {
+            return @{ status = 0; body = '{"error":{"message":"Could not reach the Anthropic API (network or proxy). Try again."}}' }
+        }
+        return @{ status = $status; body = $body }
+    } finally {
+        $ErrorActionPreference = $old
+        Remove-Item -LiteralPath $bodyFile, $outFile, $cfgFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Read-Config {
     if (-not (Test-Path -LiteralPath $ConfigFile)) { return $null }
     try { return (Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
@@ -757,7 +856,7 @@ function Find-TeamFolder {
 # The browser names the project folder (one place decides it, so the launcher
 # and the Chrome folder mode always agree); the host only checks that it is a
 # single, safe folder name inside the data folder.
-$script:AppFolders = @('records', 'projects')
+$script:AppFolders = @('records', 'projects', '.config')
 
 function Test-SafeItemName {
     param([string]$Name)
@@ -987,6 +1086,35 @@ function Invoke-ApiRoute {
         Write-Log "updated from $script:AppVersion to $installed - restarting" 'Green'
         Send-Json -Stream $Stream -Object ([ordered]@{ ok = $true; from = $script:AppVersion; to = $installed; restarting = $true })
         $script:RestartRequested = $true
+        return
+    }
+
+    # --- AI (Anthropic proxy; the launcher holds the shared key) -----------
+    # /status says whether a key is configured (never returns the key itself);
+    # /message relays a Messages-API request to Anthropic with the key attached.
+    if ($Path -eq '/api/ai/status') {
+        $key = Get-AnthropicKey
+        Send-Json -Stream $Stream -Object ([ordered]@{ ok = $true; available = [bool]$key; model = (Get-AiModel) })
+        return
+    }
+    if ($Path -eq '/api/ai/message') {
+        if ($Method -ne 'POST') { Send-Error $Stream 405 'Method Not Allowed' 'POST only'; return }
+        $key = Get-AnthropicKey
+        if (-not $key) {
+            Send-Error $Stream 503 'Service Unavailable' ("No Anthropic API key is set up. Put the team key in '" + (Get-SharedKeyPath) + "', or set the ANTHROPIC_API_KEY environment variable, then try again.")
+            return
+        }
+        if ([string]::IsNullOrWhiteSpace($Body)) { Send-Error $Stream 400 'Bad Request' 'Empty request.'; return }
+        # Same-origin is already enforced for POST, so only this app's own page
+        # reaches here; the body is the Messages API request the page built.
+        $res = Invoke-Anthropic -Key $key -BodyJson $Body -Workspace (Get-AnthropicWorkspace)
+        if ($res.status -eq 0) {
+            $msg = 'The AI request failed.'
+            try { $msg = [string]($res.body | ConvertFrom-Json).error.message } catch {}
+            Send-Error $Stream 502 'Bad Gateway' $msg
+            return
+        }
+        Send-Json -Stream $Stream -Status $res.status -StatusText 'OK' -Object $res.body
         return
     }
 

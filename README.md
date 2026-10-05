@@ -323,6 +323,59 @@ reproducible.
 
 ---
 
+## AI assistant (optional)
+
+With a key set up, an **✨ Assistant** appears in the top bar and three AI
+features light up:
+
+- **Auto-fill from a file** — upload a spreadsheet, PDF or photo of a site
+  list / BOM / scope document and the assistant reads it and fills the WAN or
+  LAN form (sites, devices, products, tiers, duration…), listing anything it
+  had to assume. You check it and press Calculate.
+- **AI opinion** — a short, candid review of a calculated estimate: is the FTE
+  reasonable, what to double-check, one suggestion.
+- **Chat** — ask how to set an estimate up, sanity-check numbers, or get an
+  explanation. The assistant sees the estimate currently on screen.
+
+### How the key is kept safe
+
+This repository is **public**, so the Anthropic API key is **never** in the
+app's files or sent to the browser. Instead the **launcher** holds the key and
+makes the Claude calls; the browser only ever talks to the launcher. The AI
+features therefore work only when the app is started with
+**Start FTE Calculator.cmd** (the website and the single-file build show them
+as unavailable).
+
+### Setting the key (once, for the whole team)
+
+Put the key in the shared team folder so every teammate's launcher picks it
+up:
+
+```
+FTE - Website\.config\anthropic-key.txt     ← one line: the API key
+```
+
+That folder is private to the team (not the public repo). The launcher also
+reads, in order of priority: the `ANTHROPIC_API_KEY` environment variable, then
+`%LOCALAPPDATA%\DPM-FTE-Calculator\anthropic-key.txt`, then the shared file
+above.
+
+Use a **workspace-scoped** API key (created against a workspace in the
+Anthropic console) — then nothing else is needed. If you use an
+organisation/user key that is *not* tied to a workspace, Anthropic also needs a
+workspace id; provide it with an `ANTHROPIC_WORKSPACE_ID` environment variable
+or in `FTE - Website\.config\ai.json`:
+
+```json
+{ "workspaceId": "wrkspc_...", "model": "claude-opus-5-5" }
+```
+
+`model` is optional (defaults to `claude-opus-5-5`; use `claude-sonnet-5-5`
+for a cheaper, faster option). The key files live outside this repository and
+are also git-ignored defensively, so they can never be committed.
+
+---
+
 ## Sending it to someone without a link
 
 ```

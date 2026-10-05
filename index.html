@@ -55,6 +55,9 @@
     <header class="topbar">
       <span class="topbar-title" id="page-title">Dashboard</span>
       <div class="topbar-right">
+        <button type="button" class="status-chip ai-chip hidden" id="ai-toggle" title="Ask the AI assistant">
+          <span class="ai-spark">✨</span><span>Assistant</span>
+        </button>
         <button type="button" class="status-chip update-chip hidden" id="update-chip" data-goto="dashboard">
           <span class="status-dot on"></span><span id="update-chip-text">Update available</span>
         </button>
@@ -337,6 +340,8 @@
       <div class="divider"><span>Actions</span></div>
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="w-calculate">Calculate WAN FTE</button>
+        <button class="btn btn-outline ai-only hidden" id="w-ai-autofill">✨ Auto-fill from a file</button>
+        <button class="btn btn-outline ai-only hidden" id="w-ai-opinion">💬 AI opinion</button>
         <button class="btn btn-outline" id="w-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
         <button class="btn btn-outline" id="w-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="w-email" data-help="emailResult">✉ Email result</button>
@@ -559,6 +564,8 @@
       <div class="divider"><span>Actions</span></div>
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="l-calculate">Calculate LAN FTE</button>
+        <button class="btn btn-outline ai-only hidden" id="l-ai-autofill">✨ Auto-fill from a file</button>
+        <button class="btn btn-outline ai-only hidden" id="l-ai-opinion">💬 AI opinion</button>
         <button class="btn btn-outline" id="l-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
         <button class="btn btn-outline" id="l-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="l-email" data-help="emailResult">✉ Email result</button>
@@ -934,6 +941,24 @@
   </main>
 </div>
 
+<!-- ═══════════════════════════════════════════════ AI ASSISTANT ══════ -->
+<div class="ai-drawer hidden" id="ai-drawer" aria-hidden="true">
+  <div class="ai-head">
+    <div class="ai-title"><span class="ai-spark">✨</span> Assistant</div>
+    <div class="ai-head-actions">
+      <button type="button" class="icon-btn" id="ai-clear" title="Clear the conversation">🗑</button>
+      <button type="button" class="icon-btn" id="ai-close" title="Close" aria-label="Close">✕</button>
+    </div>
+  </div>
+  <div class="ai-msgs" id="ai-msgs"></div>
+  <form class="ai-input" id="ai-form">
+    <input type="file" id="ai-file" class="hidden" accept=".xlsx,.xls,.csv,.txt,.pdf,.png,.jpg,.jpeg,.gif,.webp" multiple>
+    <button type="button" class="icon-btn" id="ai-attach" title="Attach a file to auto-fill the estimate">📎</button>
+    <textarea id="ai-text" rows="1" placeholder="Ask about this estimate, or attach a file to auto-fill…"></textarea>
+    <button type="submit" class="btn btn-primary btn-sm" id="ai-send">Send</button>
+  </form>
+</div>
+
 <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
 
 <script src="lib/chart.umd.min.js"></script>
@@ -948,6 +973,7 @@
 <script src="assets/import.js"></script>
 <script src="assets/planner.js"></script>
 <script src="assets/updates.js"></script>
+<script src="assets/ai.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>
