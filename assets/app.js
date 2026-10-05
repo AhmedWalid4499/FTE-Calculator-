@@ -1991,21 +1991,27 @@
   var AI = global.FTEAi;
 
   function aiInit() {
-    S.ai = { available: false, open: false, busy: false, history: [], fileSide: null };
-    if (!AI || !AI.canReachHost) { aiReflect(); return; }
-    AI.getStatus().then(function (st) { S.ai.available = !!st.available; aiReflect(); });
+    S.ai = { available: false, mode: '', needsKey: false, open: false, busy: false, connect: false, history: [], fileSide: null };
+    if (!AI || !AI.supported) { aiReflect(); return; }
+    AI.getStatus().then(function (st) {
+      S.ai.available = !!st.available; S.ai.mode = st.mode; S.ai.needsKey = !!st.needsKey;
+      aiReflect();
+    });
   }
 
   function aiReflect() {
-    var on = !!(S.ai && S.ai.available);
-    var chip = el('ai-toggle'); if (chip) chip.classList.toggle('hidden', !on);
-    qsa('.ai-only').forEach(function (b) { b.classList.toggle('hidden', !on); });
+    var show = !!(AI && AI.supported);         // the feature exists here (website or launcher)
+    var usable = !!(S.ai && S.ai.available);   // a key/launcher is ready, so Calculate-time buttons make sense
+    var chip = el('ai-toggle'); if (chip) chip.classList.toggle('hidden', !show);
+    qsa('.ai-only').forEach(function (b) { b.classList.toggle('hidden', !usable); });
   }
 
   function aiOpen() {
-    if (!S.ai.available) return;
+    if (!(AI && AI.supported)) return;
     S.ai.open = true; el('ai-drawer').classList.remove('hidden'); aiRender();
-    setTimeout(function () { var t = el('ai-text'); if (t) t.focus(); }, 30);
+    setTimeout(function () {
+      var t = el((S.ai.connect || S.ai.needsKey) ? 'ai-key-input' : 'ai-text'); if (t) t.focus();
+    }, 30);
   }
   function aiClose() { S.ai.open = false; el('ai-drawer').classList.add('hidden'); }
   function aiToggle() { if (S.ai.open) aiClose(); else aiOpen(); }
@@ -2016,8 +2022,48 @@
     return esc(text).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
   }
 
+  /* The paste-your-key panel, shown on the website (no launcher) until a key is
+     saved in this browser, and whenever the user clicks the key icon. */
+  function aiConnectHtml() {
+    var has = AI.hasBrowserKey();
+    return '<div class="ai-connect">' +
+      '<div class="ai-connect-title">🔑 Connect your Anthropic key</div>' +
+      '<p>Paste your Anthropic API key to switch the Assistant on. It is saved <b>only in this browser</b> — never uploaded, never shared, never in the app\'s code.</p>' +
+      '<input type="password" id="ai-key-input" class="ai-key-input" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">' +
+      '<input type="text" id="ai-wsid-input" class="ai-key-input" placeholder="Workspace ID — only if your key needs one" autocomplete="off" spellcheck="false">' +
+      '<div class="btn-row">' +
+        '<button class="btn btn-primary btn-sm" data-ai-key="save">Save &amp; connect</button>' +
+        (has ? '<button class="btn btn-ghost btn-sm" data-ai-key="clear">Remove key</button>' : '') +
+        (!S.ai.needsKey ? '<button class="btn btn-ghost btn-sm" data-ai-key="cancel">Cancel</button>' : '') +
+      '</div>' +
+      '<p class="ai-connect-note">Get a key at <b>console.anthropic.com</b> → API keys. A workspace-scoped key needs no Workspace ID.</p>' +
+    '</div>';
+  }
+
+  function aiStatusThen(cb) {
+    return AI.getStatus(true).then(function (st) {
+      S.ai.available = !!st.available; S.ai.mode = st.mode; S.ai.needsKey = !!st.needsKey;
+      aiReflect(); if (cb) cb(st);
+    });
+  }
+  function aiSaveKey() {
+    var ki = el('ai-key-input'), wi = el('ai-wsid-input');
+    var k = ki ? (ki.value || '').trim() : '';
+    var w = wi ? (wi.value || '').trim() : '';
+    if (!k) { U.toast('Paste your API key first.', 'warn'); if (ki) ki.focus(); return; }
+    AI.setBrowserKey(k, w);
+    S.ai.connect = false;
+    aiStatusThen(function () { aiRender(); U.toast('Assistant connected on this browser.', 'ok'); });
+  }
+  function aiClearKey() {
+    AI.clearBrowserKey(); S.ai.connect = false;
+    aiStatusThen(function () { aiRender(); U.toast('Key removed from this browser.', 'ok'); });
+  }
+
   function aiRender() {
     var host = el('ai-msgs'); if (!host) return;
+    var kb = el('ai-key'); if (kb) kb.classList.toggle('hidden', !(S.ai.mode === 'direct' || S.ai.needsKey));
+    if (S.ai.connect || S.ai.needsKey) { host.innerHTML = aiConnectHtml(); return; }
     if (!S.ai.history.length && !S.ai.busy) {
       host.innerHTML = '<div class="ai-empty"><span class="ai-spark">✨</span>Ask about this estimate, how to set one up, or whether the numbers look right — or attach a spreadsheet, PDF or photo and I\'ll fill the form for you.</div>';
       return;
@@ -2181,6 +2227,22 @@
     var toggle = el('ai-toggle'); if (toggle) toggle.addEventListener('click', aiToggle);
     var close = el('ai-close'); if (close) close.addEventListener('click', aiClose);
     var clear = el('ai-clear'); if (clear) clear.addEventListener('click', function () { S.ai.history = []; aiRender(); });
+    var keyBtn = el('ai-key'); if (keyBtn) keyBtn.addEventListener('click', function () { S.ai.connect = true; aiRender(); var i = el('ai-key-input'); if (i) i.focus(); });
+    /* The connect panel is re-rendered into #ai-msgs, so its buttons are wired
+       by delegation. */
+    var msgs = el('ai-msgs');
+    if (msgs) {
+      msgs.addEventListener('click', function (e) {
+        var b = e.target.closest('[data-ai-key]'); if (!b) return;
+        var act = b.getAttribute('data-ai-key');
+        if (act === 'save') aiSaveKey();
+        else if (act === 'clear') aiClearKey();
+        else if (act === 'cancel') { S.ai.connect = false; aiRender(); }
+      });
+      msgs.addEventListener('keydown', function (e) {
+        if (e.target && e.target.id === 'ai-key-input' && e.key === 'Enter') { e.preventDefault(); aiSaveKey(); }
+      });
+    }
     var form = el('ai-form');
     if (form) form.addEventListener('submit', function (e) {
       e.preventDefault();

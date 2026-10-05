@@ -17,43 +17,95 @@
   var IS_LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
   var CAN_REACH_HOST = (location.protocol === 'http:' || location.protocol === 'https:') && IS_LOOPBACK;
 
-  var _status = { checked: false, available: false, model: 'claude-opus-5-5' };
+  /* Two ways to reach Claude:
+       'proxy'  - the launcher holds the key and calls Anthropic for us
+                  (loopback only; the key stays on the PC).
+       'direct' - this browser holds the key (entered once, kept in
+                  localStorage) and calls Anthropic itself. This is what makes
+                  the assistant work on the published website, where there is
+                  no launcher. The key is never in the app's code or repo.
+     Direct calls need a real web origin (http/https), not a file:// build. */
+  var SUPPORTED = (location.protocol === 'http:' || location.protocol === 'https:');
+  var DEFAULT_MODEL = 'claude-opus-5-5';
+  var ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+  var LS_KEY = 'dpm_anthropic_key';
+  var LS_WSID = 'dpm_anthropic_wsid';
 
-  function getStatus(force) {
-    if (!CAN_REACH_HOST) { return Promise.resolve({ available: false, model: _status.model }); }
-    if (_status.checked && !force) return Promise.resolve(_status);
-    return fetch('/api/ai/status', { cache: 'no-store' })
-      .then(function (r) { return r.json(); })
-      .then(function (s) {
-        _status = { checked: true, available: !!(s && s.available), model: (s && s.model) || 'claude-opus-5-5' };
-        return _status;
-      })
-      .catch(function () { _status = { checked: true, available: false, model: 'claude-opus-5-5' }; return _status; });
+  function lsGet(k) { try { return (localStorage.getItem(k) || '').trim(); } catch (e) { return ''; } }
+  function lsSet(k, v) { try { if (v) { localStorage.setItem(k, v); } else { localStorage.removeItem(k); } } catch (e) { /* private window */ } }
+
+  function getBrowserKey() { return lsGet(LS_KEY); }
+  function getWorkspace() { return lsGet(LS_WSID); }
+  function hasBrowserKey() { return !!getBrowserKey(); }
+  function setBrowserKey(key, wsid) { lsSet(LS_KEY, (key || '').trim()); lsSet(LS_WSID, (wsid || '').trim()); _status.checked = false; }
+  function clearBrowserKey() { lsSet(LS_KEY, ''); lsSet(LS_WSID, ''); _status.checked = false; }
+
+  var _status = { checked: false, proxy: false, model: DEFAULT_MODEL };
+
+  /* Which transport a call will use right now, or '' if not usable yet. */
+  function mode() {
+    if (_status.proxy) return 'proxy';
+    if (SUPPORTED && hasBrowserKey()) return 'direct';
+    return '';
   }
 
-  /* Low-level call. body is a Messages-API request minus the key. Resolves with
-     the Anthropic message object; rejects with an Error carrying .status. */
-  function rawMessage(body) {
-    if (!CAN_REACH_HOST) return Promise.reject(new Error('The assistant needs the launcher (Start FTE Calculator.cmd).'));
-    return fetch('/api/ai/message', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }).then(function (res) {
-      return res.json().catch(function () { return null; }).then(function (data) {
-        if (!res.ok) {
-          var msg = (data && data.error && (data.error.message || data.error)) || (data && data.error) || ('HTTP ' + res.status);
-          var err = new Error(typeof msg === 'string' ? msg : 'The AI request failed.');
-          err.status = res.status;
-          throw err;
-        }
-        if (data && data.type === 'error') {
-          var e2 = new Error((data.error && data.error.message) || 'The AI request failed.');
-          e2.status = 400; throw e2;
-        }
-        return data;
-      });
+  function getStatus(force) {
+    var finish = function () {
+      var m = mode();
+      return {
+        available: !!m,              // a call can be made right now
+        mode: m,
+        canSetup: SUPPORTED,         // a pasted key could switch it on
+        needsKey: SUPPORTED && !_status.proxy && !hasBrowserKey(),
+        model: _status.model || DEFAULT_MODEL
+      };
+    };
+    if (!CAN_REACH_HOST) { _status.proxy = false; _status.checked = true; return Promise.resolve(finish()); }
+    if (_status.checked && !force) return Promise.resolve(finish());
+    return fetch('/api/ai/status', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (s) { _status.proxy = !!(s && s.available); if (s && s.model) _status.model = s.model; _status.checked = true; return finish(); })
+      .catch(function () { _status.proxy = false; _status.checked = true; return finish(); });
+  }
+
+  function handleResponse(res) {
+    return res.json().catch(function () { return null; }).then(function (data) {
+      if (!res.ok) {
+        var msg = (data && data.error && (data.error.message || data.error)) || (data && data.error) || ('HTTP ' + res.status);
+        var err = new Error(typeof msg === 'string' ? msg : 'The AI request failed.');
+        err.status = res.status;
+        throw err;
+      }
+      if (data && data.type === 'error') {
+        var e2 = new Error((data.error && data.error.message) || 'The AI request failed.');
+        e2.status = 400; throw e2;
+      }
+      return data;
     });
+  }
+
+  /* Low-level call. body is a full Messages-API request (model, max_tokens,
+     messages, ...). Resolves with the Anthropic message; rejects with an Error
+     carrying .status. */
+  function rawMessage(body) {
+    var m = mode();
+    if (m === 'proxy') {
+      return fetch('/api/ai/message', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }).then(handleResponse);
+    }
+    if (m === 'direct') {
+      var headers = {
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'x-api-key': getBrowserKey()
+      };
+      var wsid = getWorkspace();
+      if (wsid) headers['anthropic-workspace-id'] = wsid;
+      return fetch(ANTHROPIC_URL, { method: 'POST', headers: headers, body: JSON.stringify(body) }).then(handleResponse);
+    }
+    return Promise.reject(new Error('Connect your Anthropic key first (the key icon in the Assistant).'));
   }
 
   /* Pull the plain text out of a response (thinking/tool blocks are skipped). */
@@ -264,7 +316,12 @@
 
   global.FTEAi = {
     canReachHost: CAN_REACH_HOST,
+    supported: SUPPORTED,
     getStatus: getStatus,
+    mode: mode,
+    hasBrowserKey: hasBrowserKey,
+    setBrowserKey: setBrowserKey,
+    clearBrowserKey: clearBrowserKey,
     extract: extract,
     opinion: opinion,
     chat: chat,

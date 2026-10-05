@@ -337,19 +337,28 @@ features light up:
 - **Chat** — ask how to set an estimate up, sanity-check numbers, or get an
   explanation. The assistant sees the estimate currently on screen.
 
-### How the key is kept safe
+The key is an Anthropic API key. This repository is **public**, so the key is
+**never** committed to it or baked into the served code — a key in public code
+is scraped and abused within minutes. There are two safe ways to supply it,
+and the app uses whichever applies:
 
-This repository is **public**, so the Anthropic API key is **never** in the
-app's files or sent to the browser. Instead the **launcher** holds the key and
-makes the Claude calls; the browser only ever talks to the launcher. The AI
-features therefore work only when the app is started with
-**Start FTE Calculator.cmd** (the website and the single-file build show them
-as unavailable).
+### On the website — each person pastes the key once (works for everyone)
 
-### Setting the key (once, for the whole team)
+Open the app in a browser (including the published website), click
+**✨ Assistant**, and paste your Anthropic API key when prompted. It is saved
+**only in that browser** (never uploaded, never shared, never in the repo), so
+the Assistant then works for that person. Share one team key however you
+like (email, Teams) and each colleague pastes it once; a stranger who opens the
+site has no key, so they can't use it. Use the **🔑** button in the Assistant
+header to change or remove the key. If your key is organisation/user-scoped
+(not tied to a workspace), also fill the **Workspace ID** field shown under the
+key — a workspace-scoped key needs nothing extra.
 
-Put the key in the shared team folder so every teammate's launcher picks it
-up:
+### With the launcher — set the key once for the whole team
+
+When the app is started with **Start FTE Calculator.cmd**, the launcher holds
+the key and makes the Claude calls, so nobody pastes anything. Put the key in
+the shared team folder:
 
 ```
 FTE - Website\.config\anthropic-key.txt     ← one line: the API key
