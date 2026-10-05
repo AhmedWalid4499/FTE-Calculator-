@@ -2059,16 +2059,28 @@
 
   function aiSend(text) {
     if (S.ai.busy || !text) return;
-    S.ai.history.push({ role: 'user', text: text });
+    var userMsg = { role: 'user', text: text };
+    S.ai.history.push(userMsg);
     S.ai.busy = true; aiRender();
+    /* Opinion/auto-fill bubbles are display-only (aside) and must not go into
+       the API transcript, and the turns must start with 'user' and alternate -
+       otherwise Anthropic rejects the request. */
     var hist = S.ai.history
-      .filter(function (m) { return m.role === 'user' || m.role === 'assistant'; })
+      .filter(function (m) { return (m.role === 'user' || m.role === 'assistant') && !m.aside; })
       .map(function (m) { return { role: m.role, content: m.raw || m.text }; });
+    while (hist.length && hist[0].role !== 'user') { hist.shift(); }
     AI.chat(hist, aiContext()).then(function (res) {
       S.ai.busy = false;
       S.ai.history.push({ role: 'assistant', text: res.text || '(no answer)', raw: res.raw && res.raw.content });
       aiRender();
-    }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
+    }).catch(function (err) {
+      S.ai.busy = false;
+      /* Drop the just-added user turn so a retry doesn't send two user turns. */
+      var i = S.ai.history.indexOf(userMsg);
+      if (i >= 0) S.ai.history.splice(i, 1);
+      S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) });
+      aiRender();
+    });
   }
 
   function aiOpinion(side) {
@@ -2078,7 +2090,7 @@
     S.ai.history.push({ role: 'note', text: 'Opinion on "' + rec.projectName + '"' });
     S.ai.busy = true; aiRender();
     AI.opinion(aiRecordSummary(rec)).then(function (txt) {
-      S.ai.busy = false; S.ai.history.push({ role: 'assistant', text: txt || '(no answer)' }); aiRender();
+      S.ai.busy = false; S.ai.history.push({ role: 'assistant', text: txt || '(no answer)', aside: true }); aiRender();
     }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
   }
 
@@ -2154,13 +2166,13 @@
     S.ai.busy = true; aiRender();
     AI.extract(files).then(function (out) {
       S.ai.busy = false;
-      if (!out.data) { S.ai.history.push({ role: 'assistant', text: out.text || 'I couldn\'t read a project out of that file. Try a clearer site list or tell me the details here.' }); aiRender(); return; }
+      if (!out.data) { S.ai.history.push({ role: 'assistant', text: out.text || 'I couldn\'t read a project out of that file. Try a clearer site list or tell me the details here.', aside: true }); aiRender(); return; }
       var applied = applyAiExtraction(out.data, side);
       var msg = 'Filled the ' + applied.side.toUpperCase() + ' form — ' + applied.summary + '.';
       var asum = out.data.assumptions || [];
       if (asum.length) msg += '\n\n**I assumed / couldn\'t find:**\n' + asum.map(function (a) { return '• ' + a; }).join('\n');
       msg += '\n\nCheck the fields, then press Calculate.';
-      S.ai.history.push({ role: 'assistant', text: msg });
+      S.ai.history.push({ role: 'assistant', text: msg, aside: true });
       aiRender();
     }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
   }

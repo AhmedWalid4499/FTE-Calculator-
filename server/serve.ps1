@@ -685,18 +685,20 @@ function Invoke-Anthropic {
     $cfgFile  = [IO.Path]::GetTempFileName()
     [System.IO.File]::WriteAllText($bodyFile, $BodyJson, $Utf8)
     $fwd = { param($p) $p -replace '\\', '/' }
-    # curl config: unquoted paths (forward slashes, no spaces in temp paths);
-    # the key is a quoted header value. The key has no quotes/backslashes.
+    # curl config: forward-slash paths, every value double-quoted so a space in
+    # %TEMP% (e.g. a profile like "C:\Users\John Doe") is handled - curl's config
+    # parser otherwise truncates an unquoted value at the first space. A Windows
+    # path and this key cannot contain a double-quote, so no escaping is needed.
     $cfg = @(
         'silent', 'show-error', 'location',
         "max-time $TimeoutSec",
-        "url = $script:AiEndpoint",
+        ('url = "' + $script:AiEndpoint + '"'),
         'header = "content-type: application/json"',
         'header = "anthropic-version: 2023-06-01"',
         ('header = "x-api-key: ' + $Key + '"'),
         $(if ($Workspace) { 'header = "anthropic-workspace-id: ' + $Workspace + '"' } else { '' }),
-        ("data-binary = @" + (& $fwd $bodyFile)),
-        ("output = " + (& $fwd $outFile)),
+        ('data-binary = "@' + (& $fwd $bodyFile) + '"'),
+        ('output = "' + (& $fwd $outFile) + '"'),
         'write-out = "%{http_code}"'
     ) -join "`n"
     [System.IO.File]::WriteAllText($cfgFile, $cfg, (New-Object System.Text.ASCIIEncoding))
