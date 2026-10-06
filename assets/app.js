@@ -2060,6 +2060,20 @@
     aiStatusThen(function () { aiRender(); U.toast('Key removed from this browser.', 'ok'); });
   }
 
+  /* Shared failure handler. An org-scoped key that needs a Workspace ID opens
+     the key panel on that field instead of showing a cryptic error. */
+  function aiHandleError(err) {
+    S.ai.busy = false;
+    if (err && err.needsWorkspace && S.ai.mode !== 'proxy') {
+      S.ai.connect = true; aiRender();
+      var w = el('ai-wsid-input'); if (w) w.focus();
+      U.toast('Your key needs a Workspace ID — add it here, then Save & connect.', 'warn');
+      return;
+    }
+    S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) });
+    aiRender();
+  }
+
   function aiRender() {
     var host = el('ai-msgs'); if (!host) return;
     var kb = el('ai-key'); if (kb) kb.classList.toggle('hidden', !(S.ai.mode === 'direct' || S.ai.needsKey));
@@ -2120,12 +2134,10 @@
       S.ai.history.push({ role: 'assistant', text: res.text || '(no answer)', raw: res.raw && res.raw.content });
       aiRender();
     }).catch(function (err) {
-      S.ai.busy = false;
       /* Drop the just-added user turn so a retry doesn't send two user turns. */
       var i = S.ai.history.indexOf(userMsg);
       if (i >= 0) S.ai.history.splice(i, 1);
-      S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) });
-      aiRender();
+      aiHandleError(err);
     });
   }
 
@@ -2137,7 +2149,7 @@
     S.ai.busy = true; aiRender();
     AI.opinion(aiRecordSummary(rec)).then(function (txt) {
       S.ai.busy = false; S.ai.history.push({ role: 'assistant', text: txt || '(no answer)', aside: true }); aiRender();
-    }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
+    }).catch(aiHandleError);
   }
 
   function aiBestName(value, list) {
@@ -2220,7 +2232,7 @@
       msg += '\n\nCheck the fields, then press Calculate.';
       S.ai.history.push({ role: 'assistant', text: msg, aside: true });
       aiRender();
-    }).catch(function (err) { S.ai.busy = false; S.ai.history.push({ role: 'note', text: 'Error: ' + errorText(err) }); aiRender(); });
+    }).catch(aiHandleError);
   }
 
   function bindAiEvents() {

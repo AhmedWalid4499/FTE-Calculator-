@@ -68,17 +68,23 @@
       .catch(function () { _status.proxy = false; _status.checked = true; return finish(); });
   }
 
+  function makeError(msg, status) {
+    var err = new Error(typeof msg === 'string' ? msg : 'The AI request failed.');
+    err.status = status;
+    /* This key is org-scoped and needs a workspace id - the UI can then point
+       the user straight at the Workspace ID field. */
+    if (typeof msg === 'string' && /not scoped to a workspace|anthropic-workspace-id/i.test(msg)) err.needsWorkspace = true;
+    return err;
+  }
+
   function handleResponse(res) {
     return res.json().catch(function () { return null; }).then(function (data) {
       if (!res.ok) {
         var msg = (data && data.error && (data.error.message || data.error)) || (data && data.error) || ('HTTP ' + res.status);
-        var err = new Error(typeof msg === 'string' ? msg : 'The AI request failed.');
-        err.status = res.status;
-        throw err;
+        throw makeError(msg, res.status);
       }
       if (data && data.type === 'error') {
-        var e2 = new Error((data.error && data.error.message) || 'The AI request failed.');
-        e2.status = 400; throw e2;
+        throw makeError((data.error && data.error.message) || 'The AI request failed.', 400);
       }
       return data;
     });
