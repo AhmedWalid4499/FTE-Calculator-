@@ -658,9 +658,15 @@
     <section class="page" id="page-records">
       <div class="page-head">
         <h2>FTE Records</h2>
-        <p>Every calculation is saved here automatically, together with the inputs that produced it. Nothing is overwritten, so you can see how an estimate changed over time.</p>
+        <p>Every calculation is saved here automatically, together with the inputs that produced it. Nothing is overwritten, so you can see how an estimate changed over time. Estimates in the shared team folder are visible to everyone — the Insights tab summarises them all.</p>
       </div>
 
+      <div class="rec-tabs" id="rec-tabs">
+        <button type="button" class="rec-tab active" data-rec-tab="list">Calculations</button>
+        <button type="button" class="rec-tab" data-rec-tab="insights">✨ Insights</button>
+      </div>
+
+      <div id="rec-pane-list">
       <div class="card">
         <div class="card-head"><div class="card-title"><span class="dot"></span>Filter</div>
           <span id="records-count" class="tag tag-muted"></span>
@@ -689,9 +695,41 @@
         </div>
         <div id="records-list"></div>
       </div>
+      </div><!-- /#rec-pane-list -->
+
+      <div id="rec-pane-insights" class="hidden">
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>Overview — every saved estimate</div>
+          <span id="rec-ins-scope" class="tag tag-muted"></span>
+        </div>
+        <div class="kpi-row" id="rec-kpis"></div>
+        <div class="chart-grid-2">
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot"></span>Estimates by DPM</div>
+            <div class="chart-box"><canvas id="ins-by-dpm"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot g"></span>Total FTE by DPM</div>
+            <div class="chart-box"><canvas id="ins-fte-dpm"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot a"></span>Estimates over time</div>
+            <div class="chart-box"><canvas id="ins-over-time"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title"><span class="dot v"></span>WAN vs LAN — man-days</div>
+            <div class="chart-box"><canvas id="ins-wan-lan"></canvas></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot c"></span>By DPM — who estimated what</div></div>
+        <div id="rec-leaderboard"></div>
+      </div>
 
       <div class="card mb-0">
-        <div class="card-head"><div class="card-title"><span class="dot v"></span>Portfolio totals — all saved calculations</div></div>
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>Portfolio totals — by product and tier</div></div>
         <div class="chart-grid-2">
           <div class="chart-card">
             <div class="chart-title"><span class="dot"></span>WAN — man-days by product</div>
@@ -711,6 +749,7 @@
           </div>
         </div>
       </div>
+      </div><!-- /#rec-pane-insights -->
     </section>
 
     <!-- ════════════════════════════════════════════════ PROJECTS ══════ -->

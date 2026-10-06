@@ -29,7 +29,8 @@
     plan: { team: null, last: null, loading: false, error: null },
     pendingRoot: null,    // data-folder path being typed in Settings, kept across re-renders
     me: { name: '', email: '', source: '' },                  // who is using the app
-    teamFolder: { checked: false, candidates: [], linked: false, error: null }
+    teamFolder: { checked: false, candidates: [], linked: false, error: null },
+    recTab: 'list'        // active tab on the FTE Records page: 'list' or 'insights'
   };
 
   var TF = D.TEAM_FOLDER;
@@ -87,7 +88,7 @@
     el('page-title').textContent = PAGE_TITLES[page] || page;
 
     if (page === 'assistant') { aiDock(); return; }
-    if (page === 'records') { renderRecords(); renderPortfolio(); }
+    if (page === 'records') { renderRecords(); showRecordsTab(S.recTab || 'list'); }
     if (page === 'capacity') renderCapacityPage(true);
     if (page === 'projects') renderProjects();
     if (page === 'dpms') renderDpmDirectory();
@@ -990,7 +991,7 @@
         }).then(function (addedRecords) {
           return Promise.all([DB.listRecords(), DB.listProjects()]).then(function (res) {
             S.records = res[0]; S.projects = res[1];
-            renderRecords(); renderPortfolio(); renderProjects(); renderDashboard(); renderSettingsPage();
+            renderRecords(); renderInsights(); renderProjects(); renderDashboard(); renderSettingsPage();
             U.toast('Restored — ' + addedRecords + ' new record(s) added.', 'ok');
           });
         });
@@ -2850,7 +2851,7 @@
           updateProjectWorkbook(rec.projectName, rec.createdBy);   // rebuilt from what is left, or removed
           if (S.wan.record && S.wan.record.id === id) S.wan.record = null;
           if (S.lan.record && S.lan.record.id === id) S.lan.record = null;
-          renderRecords(); renderPortfolio(); renderDashboard();
+          renderRecords(); renderInsights(); renderDashboard();
           /* No disk at all (plain browser mode) is not a delay worth mentioning. */
           var queued = res && res.onDisk === false && (st.mode !== 'browser' || offline);
           U.toast(queued ? 'Deleted here. The file will be removed from the data folder once it can be reached.'
@@ -2883,6 +2884,164 @@
     draw('port-lan-md', lanMd, 'Man-days', 1);
     draw('port-wan-sites', wanSites, 'Sites', 2);
     draw('port-lan-sites', lanSites, 'Sites', 3);
+  }
+
+  /* ----------------------------------------------- records: Insights tab --- */
+
+  /* True only when the element is actually laid out (not display:none and on
+     the active page) - charts drawn into a hidden box get a zero size. */
+  function paneVisible(id) { var e = el(id); return !!(e && e.offsetParent !== null); }
+
+  function showRecordsTab(name) {
+    name = (name === 'insights') ? 'insights' : 'list';
+    S.recTab = name;
+    qsa('.rec-tab').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-rec-tab') === name);
+    });
+    var lp = el('rec-pane-list'), ip = el('rec-pane-insights');
+    if (lp) lp.classList.toggle('hidden', name !== 'list');
+    if (ip) ip.classList.toggle('hidden', name !== 'insights');
+    if (name === 'insights') renderInsights();
+  }
+
+  /* "YYYY-MM" -> "Mon YY". */
+  function monthShort(ym) {
+    var p = String(ym).split('-'), y = +p[0], m = +p[1];
+    var nm = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (!y || !m) return ym;
+    return nm[(m - 1) % 12] + ' ' + String(y).slice(2);
+  }
+
+  /* Aggregate every record by the person who created it. */
+  function insightsByPerson(recs) {
+    var map = {};
+    recs.forEach(function (r) {
+      var k = creatorKey(r) || '__none__';
+      if (!map[k]) {
+        map[k] = { key: k, name: k === '__none__' ? 'Not recorded' : personName(r.createdBy), count: 0, md: 0, fte: 0, sites: 0 };
+      }
+      var m = map[k];
+      m.count += 1;
+      m.md += (r.results && r.results.totalMd) || 0;
+      m.fte += (r.results && r.results.fte) || 0;
+      m.sites += (r.inputs && r.inputs.totalSites) || 0;
+    });
+    return Object.keys(map).map(function (k) { return map[k]; });
+  }
+
+  function renderInsights() {
+    if (!paneVisible('rec-pane-insights')) return;   // nothing to draw when the tab/page is off-screen
+    var recs = S.records || [];
+    renderInsightsKpis(recs);
+    renderInsightsCharts(recs);
+    renderInsightsLeaderboard(recs);
+    renderPortfolio();
+  }
+
+  function renderInsightsKpis(recs) {
+    var host = el('rec-kpis'); if (!host) return;
+    var totMd = 0, totFte = 0, sites = 0, wan = 0, lan = 0, active = 0, people = {};
+    recs.forEach(function (r) {
+      totMd += (r.results && r.results.totalMd) || 0;
+      totFte += (r.results && r.results.fte) || 0;
+      sites += (r.inputs && r.inputs.totalSites) || 0;
+      if (r.type === 'WAN') wan++; else if (r.type === 'LAN') lan++;
+      if ((r.status || '') === 'Active') active++;
+      var k = creatorKey(r); if (k) people[k] = 1;
+    });
+    var contributors = Object.keys(people).length;
+    var scope = el('rec-ins-scope');
+    if (scope) scope.textContent = fmt.int(recs.length) + ' estimate(s) · ' + contributors + ' contributor(s)';
+    host.innerHTML =
+      kpiCard('', 'Estimates', fmt.int(recs.length), wan + ' WAN · ' + lan + ' LAN') +
+      kpiCard('g', 'Total FTE', fmt.fte(totFte), 'summed across all estimates') +
+      kpiCard('a', 'Total man-days', fmt.md1(totMd), fmt.int(sites) + ' sites covered') +
+      kpiCard('c', 'Contributors', fmt.int(contributors), active + ' active project(s)');
+  }
+
+  function renderInsightsCharts(recs) {
+    var people = insightsByPerson(recs);
+
+    var byCount = people.slice().sort(function (a, b) { return b.count - a.count; }).slice(0, 12);
+    U.barChart('ins-by-dpm', byCount.map(function (p) { return p.name; }),
+               byCount.map(function (p) { return p.count; }), 'Estimates', 0);
+
+    var byFte = people.slice().sort(function (a, b) { return b.fte - a.fte; }).slice(0, 12);
+    U.barChart('ins-fte-dpm', byFte.map(function (p) { return p.name; }),
+               byFte.map(function (p) { return C.round(p.fte, 2); }), 'FTE (sum)', 1);
+
+    var byMonth = {};
+    recs.forEach(function (r) {
+      var iso = r.savedAt || '';
+      var key = iso.length >= 7 ? iso.slice(0, 7) : '';
+      if (key) byMonth[key] = (byMonth[key] || 0) + 1;
+    });
+    var mk = Object.keys(byMonth).sort().slice(-12);
+    if (mk.length) {
+      var labels = mk.map(monthShort), vals = mk.map(function (k) { return byMonth[k]; });
+      U.customChart('ins-over-time', function () {
+        var opt = U.chartOptions('Estimates');
+        opt.scales.y.ticks.precision = 0;
+        return {
+          type: 'line',
+          data: { labels: labels, datasets: [{
+            data: vals, borderColor: U.colour(2), backgroundColor: U.colour(2),
+            fill: false, tension: 0.3, pointRadius: 3, borderWidth: 2
+          }] },
+          options: opt
+        };
+      });
+    } else { U.destroyChart('ins-over-time'); }
+
+    var wanMd = 0, lanMd = 0;
+    recs.forEach(function (r) {
+      if (r.type === 'WAN') wanMd += (r.results && r.results.totalMd) || 0;
+      else if (r.type === 'LAN') lanMd += (r.results && r.results.totalMd) || 0;
+    });
+    if (wanMd + lanMd > 0) {
+      U.customChart('ins-wan-lan', function () {
+        return {
+          type: 'doughnut',
+          data: { labels: ['WAN', 'LAN'], datasets: [{
+            data: [C.round(wanMd, 1), C.round(lanMd, 1)],
+            backgroundColor: [U.colour(0), U.colour(1)], borderWidth: 0
+          }] },
+          options: {
+            responsive: true, maintainAspectRatio: false, cutout: '62%',
+            plugins: { legend: { display: true, position: 'bottom',
+              labels: { color: U.isDark() ? '#a9b4c6' : '#475569', boxWidth: 12, padding: 14 } } }
+          }
+        };
+      });
+    } else { U.destroyChart('ins-wan-lan'); }
+  }
+
+  function renderInsightsLeaderboard(recs) {
+    var host = el('rec-leaderboard'); if (!host) return;
+    var people = insightsByPerson(recs).sort(function (a, b) { return (b.count - a.count) || (b.fte - a.fte); });
+    if (!people.length) {
+      host.innerHTML = '<div class="empty"><div class="empty-ic">🗄</div><p class="empty-title">No estimates yet</p>' +
+        '<p class="empty-detail">Run an estimate from the WAN or LAN page - it will appear here, for everyone sharing the team folder.</p></div>';
+      return;
+    }
+    var tC = 0, tMd = 0, tFte = 0, tS = 0;
+    var body = people.map(function (p) {
+      tC += p.count; tMd += p.md; tFte += p.fte; tS += p.sites;
+      var avg = p.count ? p.fte / p.count : 0;
+      return '<tr><td><b>' + esc(p.name) + '</b></td>' +
+        '<td class="num">' + fmt.int(p.count) + '</td>' +
+        '<td class="num">' + fmt.int(p.sites) + '</td>' +
+        '<td class="num">' + fmt.md1(p.md) + '</td>' +
+        '<td class="num">' + fmt.fte(p.fte) + '</td>' +
+        '<td class="num">' + fmt.fte(avg) + '</td></tr>';
+    }).join('');
+    host.innerHTML = '<div class="ins-table-wrap"><table>' +
+      '<thead><tr><th>DPM</th><th class="num">Estimates</th><th class="num">Sites</th>' +
+      '<th class="num">Man-days</th><th class="num">Total FTE</th><th class="num">Avg FTE</th></tr></thead>' +
+      '<tbody>' + body + '</tbody>' +
+      '<tfoot><tr><td>Everyone</td><td class="num">' + fmt.int(tC) + '</td><td class="num">' + fmt.int(tS) +
+      '</td><td class="num">' + fmt.md1(tMd) + '</td><td class="num">' + fmt.fte(tFte) + '</td><td class="num">—</td></tr></tfoot>' +
+      '</table></div>';
   }
 
   /* ======================================================= team capacity = */
@@ -4092,7 +4251,7 @@
       .then(function () { return Promise.all([DB.listRecords(), DB.listProjects()]); })
       .then(function (res) {
         S.records = res[0]; S.projects = res[1]; S.plan.team = null;
-        renderStorageStatus(); renderRecords(); renderPortfolio(); renderProjects(); renderDashboard();
+        renderStorageStatus(); renderRecords(); renderInsights(); renderProjects(); renderDashboard();
         renderSettingsPage();
         U.toast(message, level || 'ok');
       });
@@ -4901,6 +5060,11 @@
     }, true);
 
     /* Records */
+    var recTabs = el('rec-tabs');
+    if (recTabs) recTabs.addEventListener('click', function (e) {
+      var b = e.target.closest('.rec-tab'); if (!b) return;
+      showRecordsTab(b.getAttribute('data-rec-tab'));
+    });
     ['rec-search', 'rec-owner', 'rec-type', 'rec-status', 'rec-sort'].forEach(function (id) {
       el(id).addEventListener('input', renderRecords);
     });
@@ -4911,7 +5075,7 @@
         .then(function () { return DB.listRecords(); })
         .then(function (rows) {
           S.records = rows;
-          renderRecords(); renderPortfolio(); renderStorageStatus();
+          renderRecords(); renderInsights(); renderStorageStatus();
           U.toast('Refreshed — ' + rows.length + ' record(s).', 'ok');
         });
     });
@@ -5033,7 +5197,7 @@
              this browser never saw still belongs in it. */
           rebuildWorkbooks({ keys: gone.map(function (r) { return { projectName: r.projectName, createdBy: r.createdBy }; }) });
           S.records = []; S.wan.record = null; S.lan.record = null;
-          renderRecords(); renderPortfolio(); renderDashboard();
+          renderRecords(); renderInsights(); renderDashboard();
           renderResultChip(null); renderSettingsPage();
           U.toast('All records deleted.', 'ok');
         });

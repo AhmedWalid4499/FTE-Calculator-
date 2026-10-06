@@ -894,3 +894,13 @@ body.ai-docked .ai-chip { display: none; }   /* floating entry point is redundan
 .ai-table th { background: var(--surface-2); font-weight: 700; white-space: nowrap; }
 .ai-table tbody tr:nth-child(even) td { background: var(--surface-2); }
 .ai-table tbody tr:last-child td { border-bottom: none; }
+
+/* --- Records page tabs + Insights --- */
+.rec-tabs { display: flex; gap: 2px; margin-bottom: var(--sp-4); border-bottom: 1px solid var(--border); }
+.rec-tab { appearance: none; -webkit-appearance: none; background: transparent; border: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 9px 16px; font: inherit;
+  font-weight: 650; font-size: .92rem; color: var(--text-3); cursor: pointer; border-radius: 7px 7px 0 0; }
+.rec-tab:hover { color: var(--text); background: var(--row-hover); }
+.rec-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.ins-table-wrap { overflow-x: auto; }
+th.num, td.num { text-align: right; }
