@@ -334,7 +334,15 @@
           { role: 'assistant', content: msg.content },
           { role: 'user', content: [{ type: 'tool_result', tool_use_id: tu.id, content: String(resultText || 'Done.') }] }
         ]);
-        return rawMessage(Object.assign({}, base, { messages: m2 })).then(function (msg2) {
+        /* Keep tools identical to the first call: the assistant turn we just
+           echoed carries a signed thinking block whose signature is bound to
+           the exact prefix (system + tools + prior messages). Dropping tools
+           here would change that prefix and 400 on preserved-thinking models
+           (opus-5-5, thinking always on). tool_choice:none - which opus-5-5
+           accepts - keeps this reply text-only so there is no second fill. */
+        return rawMessage(Object.assign({}, base, {
+          messages: m2, tools: [fillTool()], tool_choice: { type: 'none' }
+        })).then(function (msg2) {
           return { text: textOf(msg2), raw: msg2, filled: true };
         });
       });

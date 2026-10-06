@@ -2149,11 +2149,15 @@
        otherwise Anthropic rejects the request. */
     var hist = S.ai.history
       .filter(function (m) { return (m.role === 'user' || m.role === 'assistant') && !m.aside; })
-      .map(function (m) { return { role: m.role, content: m.raw || m.text }; });
+      .map(function (m) { return { role: m.role, content: m.text }; });
     while (hist.length && hist[0].role !== 'user') { hist.shift(); }
     AI.chat(hist, aiContext(), aiOnFill).then(function (res) {
       S.ai.busy = false;
-      S.ai.history.push({ role: 'assistant', text: res.text || '(no answer)', raw: res.raw && res.raw.content });
+      /* Store plain text only. The raw reply carries a signed thinking block
+         (opus-5-5 thinks on every turn); replaying it on a later turn would
+         400, because by then the system prompt (aiContext) and tools differ
+         from when it was signed. This chat only needs text continuity. */
+      S.ai.history.push({ role: 'assistant', text: res.text || '(no answer)' });
       aiRender();
     }).catch(function (err) {
       /* Drop the just-added user turn so a retry doesn't send two user turns. */
