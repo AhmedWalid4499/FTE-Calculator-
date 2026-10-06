@@ -14,9 +14,20 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.4.0",
+  "version": "2.5.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.5.0",
+      "date": "2026-10-06",
+      "title": "A clearer, roomier Assistant",
+      "features": [
+        "The Assistant's answers now read properly: tables are real tables, with lists, headings and code laid out instead of one long line - so comparisons and breakdowns are easy to scan.",
+        "Make it bigger: enlarge the Assistant with one click, or drag its left edge to any width. Your choice is remembered.",
+        "Open it in its own window: a focused, full-window chat you can keep beside the calculator - click the window icon in the Assistant's header.",
+        "Reliability: fixed a case where the Assistant could show an error right after filling in an estimate on its own."
+      ]
+    },
     {
       "version": "2.4.0",
       "date": "2026-10-06",
