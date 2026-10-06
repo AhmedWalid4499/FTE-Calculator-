@@ -298,26 +298,47 @@
     }).then(textOf);
   }
 
+  function fillNamesBlock() {
+    return [
+      'Use ONLY these exact names where they apply:',
+      'WAN products: ' + (D.PRODUCTS || []).join(' | '),
+      'WAN connectivity modes: ' + (D.CONNECTIVITY_MODES || []).join(' | '),
+      'LAN tiers: ' + (D.LAN_TIER_LABELS || []).join(' | '),
+      'LAN stages: ' + (D.STAGE_NAMES || []).join(' | ')
+    ].join('\n');
+  }
+
   var CHAT_SYSTEM = [
     'You are the assistant inside the DPM FTE Calculator, helping Delivery Project Managers estimate the man-days and FTE for WAN and LAN network rollouts.',
-    'Be concise and practical. You can explain the method, sanity-check numbers, suggest how to set up an estimate, and give an opinion. The current estimate (if any) is provided for context.',
-    'You cannot press buttons; when the user should change something, tell them which field. Plain words, short answers.'
+    'Be concise and practical: explain the method, sanity-check numbers, and give an opinion.',
+    'AUTOMATION: when the user asks you to create, set up, estimate, build, fill in, or calculate a project - from a description they type or a file they attached - call the fill_estimate tool with your best values. The app then fills the WAN or LAN form and runs the calculation for you, and returns the result for you to report back in plain words. Make the allocation rows add up to the total sites. For questions or advice, just answer in text and do not call the tool.',
+    'You cannot press other buttons; when the user should change something, name the field. Short answers.'
   ].join(' ');
 
-  /* history: array of {role:'user'|'assistant', content: <string | blocks>}.
-     context: a short text summary of the current estimate (may be ''). */
-  function chat(history, context) {
-    var sys = CHAT_SYSTEM + (context ? ('\n\nCurrent estimate in the app:\n' + context) : '');
+  /* history: [{role, content}]. context: current-estimate summary (may be '').
+     onFill(input): optional callback invoked when the model fills an estimate;
+     it should apply the values + calculate and resolve to a short result
+     summary, which is sent back so the model can report it to the user. */
+  function chat(history, context, onFill) {
+    var sys = CHAT_SYSTEM + (context ? ('\n\nCurrent estimate in the app:\n' + context) : '') + '\n\n' + fillNamesBlock();
     var messages = history.map(function (m) {
       return { role: m.role, content: typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content };
     });
-    return rawMessage({
-      model: _status.model,
-      max_tokens: 1500,
-      output_config: { effort: 'low' },
-      system: sys,
-      messages: messages
-    }).then(function (msg) { return { text: textOf(msg), raw: msg }; });
+    var base = { model: _status.model, max_tokens: 1500, output_config: { effort: 'low' }, system: sys };
+    return rawMessage(Object.assign({}, base, { messages: messages, tools: [fillTool()] })).then(function (msg) {
+      var tu = (msg.content || []).filter(function (b) { return b.type === 'tool_use' && b.name === 'fill_estimate'; })[0];
+      if (!(tu && onFill)) return { text: textOf(msg), raw: msg, filled: false };
+      /* The model asked to fill: run it, hand the result back, let it reply. */
+      return Promise.resolve(onFill(tu.input)).then(function (resultText) {
+        var m2 = messages.concat([
+          { role: 'assistant', content: msg.content },
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: tu.id, content: String(resultText || 'Done.') }] }
+        ]);
+        return rawMessage(Object.assign({}, base, { messages: m2 })).then(function (msg2) {
+          return { text: textOf(msg2), raw: msg2, filled: true };
+        });
+      });
+    });
   }
 
   global.FTEAi = {

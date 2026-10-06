@@ -2074,6 +2074,28 @@
     aiRender();
   }
 
+  /* Build + show + save a calculation from the current form, as the Calculate
+     button does, and return the record (or null if the form didn't validate).
+     Used by the assistant to calculate on its own after filling. */
+  function runCalc(side) {
+    var rec = side === 'wan' ? buildWanRecord() : buildLanRecord();
+    if (!rec) return null;
+    showResult(side, rec);
+    persistRecord(rec);
+    return rec;
+  }
+
+  /* The assistant's fill_estimate tool landed: put the values on the form, run
+     the calculation, and return a short result summary for the model to relay. */
+  function aiOnFill(input) {
+    var applied = applyAiExtraction(input, S.ai.fileSide);
+    var rec = runCalc(applied.side);
+    if (!rec) {
+      return 'Filled the ' + applied.side.toUpperCase() + ' form, but it is not ready to calculate yet — usually the allocation rows must add up to the total sites. Ask the user to check the highlighted fields and press Calculate.';
+    }
+    return 'Filled and calculated the ' + applied.side.toUpperCase() + ' estimate.\n' + aiRecordSummary(rec);
+  }
+
   function aiRender() {
     var host = el('ai-msgs'); if (!host) return;
     var kb = el('ai-key'); if (kb) kb.classList.toggle('hidden', !(S.ai.mode === 'direct' || S.ai.needsKey));
@@ -2129,7 +2151,7 @@
       .filter(function (m) { return (m.role === 'user' || m.role === 'assistant') && !m.aside; })
       .map(function (m) { return { role: m.role, content: m.raw || m.text }; });
     while (hist.length && hist[0].role !== 'user') { hist.shift(); }
-    AI.chat(hist, aiContext()).then(function (res) {
+    AI.chat(hist, aiContext(), aiOnFill).then(function (res) {
       S.ai.busy = false;
       S.ai.history.push({ role: 'assistant', text: res.text || '(no answer)', raw: res.raw && res.raw.content });
       aiRender();
@@ -2226,10 +2248,17 @@
       S.ai.busy = false;
       if (!out.data) { S.ai.history.push({ role: 'assistant', text: out.text || 'I couldn\'t read a project out of that file. Try a clearer site list or tell me the details here.', aside: true }); aiRender(); return; }
       var applied = applyAiExtraction(out.data, side);
-      var msg = 'Filled the ' + applied.side.toUpperCase() + ' form — ' + applied.summary + '.';
+      var rec = runCalc(applied.side);   // fill AND calculate, on its own
+      var msg;
+      if (rec) {
+        var r = rec.results;
+        msg = 'Filled **and calculated** the ' + applied.side.toUpperCase() + ' estimate: **' + fmt.md(r.totalMd) + ' man-days**, **' +
+          fmt.fte(r.fte) + ' FTE**' + (r.usingBell ? (' (peak ' + fmt.fte(r.peakFte) + ')') : '') + ', ' + r.headcount + ' headcount.';
+      } else {
+        msg = 'Filled the ' + applied.side.toUpperCase() + ' form, but it needs one tweak before it calculates — usually the allocation rows must add up to the total sites. I\'ve highlighted the fields; fix and press Calculate.';
+      }
       var asum = out.data.assumptions || [];
       if (asum.length) msg += '\n\n**I assumed / couldn\'t find:**\n' + asum.map(function (a) { return '• ' + a; }).join('\n');
-      msg += '\n\nCheck the fields, then press Calculate.';
       S.ai.history.push({ role: 'assistant', text: msg, aside: true });
       aiRender();
     }).catch(aiHandleError);
