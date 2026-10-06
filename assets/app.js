@@ -1991,8 +1991,14 @@
   var AI = global.FTEAi;
 
   function aiInit() {
-    S.ai = { available: false, mode: '', needsKey: false, open: false, busy: false, connect: false, history: [], fileSide: null };
+    S.ai = { available: false, mode: '', needsKey: false, open: false, busy: false, connect: false, history: [], fileSide: null, solo: false };
+    /* Solo (dedicated-window) layout only applies where the assistant exists.
+       Deciding it before the support guard would add body.ai-solo - which
+       hides the whole app - on the portable file:// build at #assistant. */
     if (!AI || !AI.supported) { aiReflect(); return; }
+    S.ai.solo = (location.hash || '').toLowerCase().indexOf('assistant') !== -1;
+    aiApplyLayout();
+    if (S.ai.solo) aiOpen();   // a popped-out window opens straight into the chat
     AI.getStatus().then(function (st) {
       S.ai.available = !!st.available; S.ai.mode = st.mode; S.ai.needsKey = !!st.needsKey;
       aiReflect();
@@ -2008,18 +2014,213 @@
 
   function aiOpen() {
     if (!(AI && AI.supported)) return;
-    S.ai.open = true; el('ai-drawer').classList.remove('hidden'); aiRender();
+    S.ai.open = true;
+    var d = el('ai-drawer'); d.classList.remove('hidden'); d.setAttribute('aria-hidden', 'false');
+    aiApplyLayout();
+    aiRender();
     setTimeout(function () {
       var t = el((S.ai.connect || S.ai.needsKey) ? 'ai-key-input' : 'ai-text'); if (t) t.focus();
     }, 30);
   }
-  function aiClose() { S.ai.open = false; el('ai-drawer').classList.add('hidden'); }
+  function aiClose() {
+    if (S.ai.solo) {
+      /* A popped-out window (opener set) can just close. A directly-opened
+         #assistant page - bookmarked, shared or hand-typed - cannot
+         (window.close() is a no-op there), so leave solo and restore the
+         normal app in place instead of trapping the user behind it. */
+      if (window.opener) { try { window.close(); } catch (e) {} return; }
+      S.ai.solo = false;
+      document.body.classList.remove('ai-solo');
+      try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; }
+      aiApplyLayout();
+    }
+    S.ai.open = false;
+    var d = el('ai-drawer'); d.classList.add('hidden'); d.setAttribute('aria-hidden', 'true');
+  }
   function aiToggle() { if (S.ai.open) aiClose(); else aiOpen(); }
 
-  /* Escape everything, then allow only **bold** and leave line breaks (the
-     container is pre-wrap). No other HTML from the model is rendered. */
+  /* ------------------------------------------------- drawer size/window ---
+     The panel can be widened (remembered per browser), dragged to any width
+     from its left edge, or popped out into its own dedicated window. */
+  var AI_WIDE_KEY = 'dpm_ai_wide', AI_WIDTH_KEY = 'dpm_ai_width';
+
+  function aiApplyLayout() {
+    var d = el('ai-drawer'); if (!d) return;
+    document.body.classList.toggle('ai-solo', !!S.ai.solo);
+    var wide = false, width = 0;
+    try { wide = localStorage.getItem(AI_WIDE_KEY) === '1'; width = parseInt(localStorage.getItem(AI_WIDTH_KEY), 10) || 0; } catch (e) {}
+    if (S.ai.solo) {
+      d.classList.remove('ai-wide'); d.style.width = '';           // fills the window via CSS
+    } else {
+      d.classList.toggle('ai-wide', wide);
+      d.style.width = (!wide && width >= 320) ? (width + 'px') : '';
+    }
+    var btn = el('ai-expand');
+    if (btn) {
+      var big = wide || width >= 560;
+      btn.textContent = big ? '⤡' : '⤢';
+      btn.title = big ? 'Shrink the panel' : 'Enlarge the panel';
+      btn.setAttribute('aria-label', btn.title);
+    }
+  }
+
+  function aiExpand() {
+    var wide = false, width = 0;
+    try { wide = localStorage.getItem(AI_WIDE_KEY) === '1'; width = parseInt(localStorage.getItem(AI_WIDTH_KEY), 10) || 0; } catch (e) {}
+    var big = wide || width >= 560;
+    try {
+      localStorage.removeItem(AI_WIDTH_KEY);        // the toggle supersedes any dragged width
+      localStorage.setItem(AI_WIDE_KEY, big ? '0' : '1');
+    } catch (e) {}
+    aiApplyLayout();
+  }
+
+  function aiPopOut() {
+    var url = location.href.split('#')[0] + '#assistant';
+    var w = Math.min(560, (window.screen && screen.availWidth) || 900);
+    var h = Math.min(780, (window.screen && screen.availHeight) || 800);
+    var win = window.open(url, 'dpm-assistant', 'width=' + w + ',height=' + h + ',resizable=yes,scrollbars=yes,menubar=no,toolbar=no,location=no,status=no');
+    if (win) { win.focus(); }
+    else { U.toast('Pop-up blocked — allow pop-ups for this site to open the Assistant window.', 'warn'); }
+  }
+
+  /* User turns: escape, allow **bold**, keep line breaks (container is
+     pre-wrap). No other HTML from the model or user is rendered. */
   function aiFormat(text) {
     return esc(text).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  }
+
+  /* ------------------------------------------------- markdown rendering ---
+     A small, safe Markdown -> HTML renderer for the assistant's replies, so
+     tables are tables, lists are lists and code reads as code - not one flat
+     line. Every piece of model text is HTML-escaped BEFORE any markdown rule
+     runs, and the only tags emitted are ones we generate here, so the model
+     cannot inject markup. Supports: fenced code, headings, GFM pipe tables,
+     blockquotes, ordered/unordered lists, rules, and inline code/bold/italic/
+     strikethrough/links. ES5 only. */
+
+  /* Inline spans. Input is already HTML-escaped. */
+  function mdInline(s) {
+    var codes = [];
+    /* Protect inline code first so nothing below rewrites its contents. */
+    s = s.replace(/`([^`]+)`/g, function (_m, c) { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
+    /* Links: http/https only (no javascript: or data: URIs). The {1,200} /
+       {1,2048} bounds stop a single match from scanning an unbounded run,
+       which would otherwise backtrack quadratically on adversarial text. */
+    s = s.replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]{1,2048})\)/g, function (_m, t, u) {
+      return '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + t + '</a>';
+    });
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    s = s.replace(/\u0000(\d+)\u0000/g, function (_m, i) { return '<code>' + codes[+i] + '</code>'; });
+    return s;
+  }
+
+  /* Split one table row into its cells, honouring escaped pipes (\|). */
+  function mdSplitRow(row) {
+    var r = row.trim().replace(/^\|/, '').replace(/\|$/, '').replace(/\\\|/g, '\u0001');
+    return r.split('|').map(function (c) { return c.replace(/\u0001/g, '|'); });
+  }
+
+  var MD_TABLE_SEP = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
+  function mdIsTableStart(lines, i) {
+    return lines[i].indexOf('|') !== -1 && i + 1 < lines.length && MD_TABLE_SEP.test(lines[i + 1]);
+  }
+
+  function mdToHtml(src) {
+    /* Strip our private sentinels out of model text so a stray U+0000/U+0001
+       in a reply cannot desync the code-span / table-pipe placeholders. Cap
+       the length so no pathological reply can lock the main thread (real
+       replies are a few KB; this only trips on abuse). */
+    var text = String(src == null ? '' : src).replace(/[\u0000\u0001]/g, '').replace(/\r\n?/g, '\n');
+    if (text.length > 100000) text = text.slice(0, 100000) + '\n\n…(truncated)';
+    var lines = text.split('\n');
+    var out = [], i = 0, m;
+    while (i < lines.length) {
+      var line = lines[i];
+
+      /* Fenced code block. */
+      if (/^```/.test(line)) {
+        var buf = [];
+        i++;
+        while (i < lines.length && !/^```\s*$/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++;   // skip the closing fence
+        out.push('<pre class="ai-code"><code>' + esc(buf.join('\n')) + '</code></pre>');
+        continue;
+      }
+      /* Blank line. */
+      if (/^\s*$/.test(line)) { i++; continue; }
+      /* Heading. */
+      m = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (m) {
+        var lvl = m[1].length;
+        out.push('<h' + lvl + ' class="ai-h">' + mdInline(esc(m[2].replace(/\s*#*\s*$/, ''))) + '</h' + lvl + '>');
+        i++; continue;
+      }
+      /* Horizontal rule. */
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push('<hr class="ai-hr">'); i++; continue; }
+      /* GFM pipe table. */
+      if (mdIsTableStart(lines, i)) {
+        var head = mdSplitRow(line);
+        var aligns = mdSplitRow(lines[i + 1]).map(function (c) {
+          c = c.trim();
+          var l = c.charAt(0) === ':', r = c.charAt(c.length - 1) === ':';
+          return (l && r) ? 'center' : r ? 'right' : l ? 'left' : '';
+        });
+        i += 2;
+        var t = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
+        head.forEach(function (c, ci) {
+          t += '<th' + (aligns[ci] ? ' style="text-align:' + aligns[ci] + '"' : '') + '>' + mdInline(esc(c.trim())) + '</th>';
+        });
+        t += '</tr></thead><tbody>';
+        while (i < lines.length && lines[i].indexOf('|') !== -1 && !/^\s*$/.test(lines[i])) {
+          var cells = mdSplitRow(lines[i]); i++;
+          t += '<tr>';
+          for (var c2 = 0; c2 < head.length; c2++) {
+            var cell = cells[c2] == null ? '' : cells[c2];
+            t += '<td' + (aligns[c2] ? ' style="text-align:' + aligns[c2] + '"' : '') + '>' + mdInline(esc(cell.trim())) + '</td>';
+          }
+          t += '</tr>';
+        }
+        out.push(t + '</tbody></table></div>');
+        continue;
+      }
+      /* Blockquote. */
+      if (/^\s*>\s?/.test(line)) {
+        var qbuf = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) { qbuf.push(lines[i].replace(/^\s*>\s?/, '')); i++; }
+        out.push('<blockquote class="ai-quote">' + mdInline(esc(qbuf.join(' '))) + '</blockquote>');
+        continue;
+      }
+      /* Unordered list. */
+      if (/^\s*[-*+]\s+/.test(line)) {
+        var ul = [];
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { ul.push(lines[i].replace(/^\s*[-*+]\s+/, '')); i++; }
+        out.push('<ul class="ai-ul">' + ul.map(function (it) { return '<li>' + mdInline(esc(it)) + '</li>'; }).join('') + '</ul>');
+        continue;
+      }
+      /* Ordered list. */
+      if (/^\s*\d+[.)]\s+/.test(line)) {
+        var ol = [];
+        while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) { ol.push(lines[i].replace(/^\s*\d+[.)]\s+/, '')); i++; }
+        out.push('<ol class="ai-ol">' + ol.map(function (it) { return '<li>' + mdInline(esc(it)) + '</li>'; }).join('') + '</ol>');
+        continue;
+      }
+      /* Paragraph: gather until a blank line or a block that starts something. */
+      var para = [];
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^```/.test(lines[i]) &&
+             !/^(#{1,6})\s+/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) &&
+             !/^\s*\d+[.)]\s+/.test(lines[i]) && !/^\s*>\s?/.test(lines[i]) &&
+             !mdIsTableStart(lines, i)) {
+        para.push(lines[i]); i++;
+      }
+      if (para.length) {
+        out.push('<p>' + para.map(function (p) { return mdInline(esc(p)); }).join('<br>') + '</p>');
+      } else { i++; }   // safety: never spin on a line no branch consumed
+    }
+    return out.join('');
   }
 
   /* The paste-your-key panel, shown on the website (no launcher) until a key is
@@ -2106,7 +2307,8 @@
     }
     var html = S.ai.history.map(function (m) {
       if (m.role === 'note') return '<div class="ai-msg note">' + esc(m.text) + '</div>';
-      return '<div class="ai-msg ' + (m.role === 'user' ? 'user' : 'bot') + '">' + aiFormat(m.text) + '</div>';
+      if (m.role === 'user') return '<div class="ai-msg user">' + aiFormat(m.text) + '</div>';
+      return '<div class="ai-msg bot ai-md">' + mdToHtml(m.text) + '</div>';
     }).join('');
     if (S.ai.busy) html += '<div class="ai-msg bot typing">…thinking…</div>';
     host.innerHTML = html;
@@ -2271,7 +2473,45 @@
   function bindAiEvents() {
     var toggle = el('ai-toggle'); if (toggle) toggle.addEventListener('click', aiToggle);
     var close = el('ai-close'); if (close) close.addEventListener('click', aiClose);
+    var expand = el('ai-expand'); if (expand) expand.addEventListener('click', aiExpand);
+    var pop = el('ai-pop'); if (pop) pop.addEventListener('click', aiPopOut);
     var clear = el('ai-clear'); if (clear) clear.addEventListener('click', function () { S.ai.history = []; aiRender(); });
+    /* Drag the left edge to set any width; the choice is remembered. */
+    var handle = el('ai-resize');
+    if (handle && window.PointerEvent) {
+      handle.addEventListener('pointerdown', function (e) {
+        if (S.ai.solo) return;
+        e.preventDefault();
+        var drawer = el('ai-drawer');
+        try { handle.setPointerCapture(e.pointerId); } catch (er) {}
+        function move(ev) {
+          if (!ev.buttons) { end(); return; }   // button let go without a pointerup reaching us
+          var w = window.innerWidth - ev.clientX;
+          w = Math.max(320, Math.min(Math.round(window.innerWidth * 0.96), w));
+          drawer.classList.remove('ai-wide');
+          drawer.style.width = w + 'px';
+        }
+        /* One cleanup bound to every way a drag can end - pointerup, but also
+           pointercancel / lost capture (right-click, Alt+Tab, a second touch).
+           Without this the move/up listeners leak and a later bare hover over
+           the handle would resize the panel. Remove listeners before releasing
+           capture, since releasing itself fires lostpointercapture. */
+        function end() {
+          handle.removeEventListener('pointermove', move);
+          handle.removeEventListener('pointerup', end);
+          handle.removeEventListener('pointercancel', end);
+          handle.removeEventListener('lostpointercapture', end);
+          try { handle.releasePointerCapture(e.pointerId); } catch (er) {}
+          var w = parseInt(drawer.style.width, 10);
+          try { localStorage.setItem(AI_WIDE_KEY, '0'); if (w) localStorage.setItem(AI_WIDTH_KEY, String(w)); } catch (er) {}
+          aiApplyLayout();
+        }
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', end);
+        handle.addEventListener('pointercancel', end);
+        handle.addEventListener('lostpointercapture', end);
+      });
+    }
     var keyBtn = el('ai-key'); if (keyBtn) keyBtn.addEventListener('click', function () { S.ai.connect = true; aiRender(); var i = el('ai-key-input'); if (i) i.focus(); });
     /* The connect panel is re-rendered into #ai-msgs, so its buttons are wired
        by delegation. */
