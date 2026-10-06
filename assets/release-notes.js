@@ -14,9 +14,21 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.5.0",
+  "version": "2.6.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.6.0",
+      "date": "2026-10-06",
+      "title": "See the whole team's estimates",
+      "features": [
+        "New Insights tab on the FTE Records page: a dashboard over every saved estimate, not just your own.",
+        "See who estimated what - charts of estimates by DPM and total FTE by DPM, plus a per-person leaderboard with estimates, sites, man-days and average FTE.",
+        "Totals at a glance: estimates (WAN vs LAN), total FTE, total man-days and sites, and how many people have contributed.",
+        "Trends: estimates over time by month, and a WAN-vs-LAN split by man-days.",
+        "Everyone sharing the team folder sees the same estimates, so the Insights tab is a single team-wide picture - no setup needed beyond connecting the shared folder."
+      ]
+    },
     {
       "version": "2.5.0",
       "date": "2026-10-06",
