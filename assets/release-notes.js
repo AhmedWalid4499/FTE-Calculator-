@@ -14,9 +14,22 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.3.0",
+  "version": "2.4.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.4.0",
+      "date": "2026-10-06",
+      "title": "AI assistant",
+      "features": [
+        "An AI assistant (the ✨ Assistant button, top right): ask it about an estimate, how to set one up, or whether the numbers look right.",
+        "Auto-fill from a file: upload a spreadsheet, PDF or photo of a site list, BOM or scope document and it fills the WAN or LAN form - sites, devices, products, tiers, duration - and lists anything it had to assume.",
+        "It can do the whole estimate on its own: describe a project in the chat (or attach a file) and the assistant fills the form AND runs the calculation, then reports the man-days and FTE.",
+        "AI opinion: a short, candid review of a calculated estimate - is it reasonable, what to double-check, one suggestion.",
+        "Works on the website too: click the key icon and paste an Anthropic API key once (kept only in your browser, never shared or uploaded). With the launcher, one shared key set in the team folder serves everyone.",
+        "Also recently added: a downloadable illustrated User Guide (PDF), linked from the sidebar and the Dashboard."
+      ]
+    },
     {
       "version": "2.3.0",
       "date": "2026-10-01",
