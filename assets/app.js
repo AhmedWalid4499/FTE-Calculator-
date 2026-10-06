@@ -36,6 +36,7 @@
 
   var PAGE_TITLES = {
     dashboard: 'Dashboard', wan: 'WAN Estimator', lan: 'LAN Estimator',
+    assistant: 'Assistant',
     capacity: 'Team capacity',
     records: 'FTE Records', projects: 'Projects', dpms: 'DPM Directory',
     reference: 'Rates & Method', settings: 'Settings'
@@ -76,6 +77,7 @@
   /* ========================================================= navigation == */
 
   function gotoPage(page) {
+    if (page !== 'assistant') aiUndock();   // pop the chat back out before leaving the Assistant page
     qsa('.page').forEach(function (p) { p.classList.remove('active'); });
     qsa('.nav-item[data-page]').forEach(function (n) { n.classList.remove('active'); });
     var target = el('page-' + page);
@@ -84,6 +86,7 @@
     if (nav) nav.classList.add('active');
     el('page-title').textContent = PAGE_TITLES[page] || page;
 
+    if (page === 'assistant') { aiDock(); return; }
     if (page === 'records') { renderRecords(); renderPortfolio(); }
     if (page === 'capacity') renderCapacityPage(true);
     if (page === 'projects') renderProjects();
@@ -2009,6 +2012,7 @@
     var show = !!(AI && AI.supported);         // the feature exists here (website or launcher)
     var usable = !!(S.ai && S.ai.available);   // a key/launcher is ready, so Calculate-time buttons make sense
     var chip = el('ai-toggle'); if (chip) chip.classList.toggle('hidden', !show);
+    qsa('.ai-nav').forEach(function (b) { b.classList.toggle('hidden', !show); });
     qsa('.ai-only').forEach(function (b) { b.classList.toggle('hidden', !usable); });
   }
 
@@ -2038,6 +2042,39 @@
     var d = el('ai-drawer'); d.classList.add('hidden'); d.setAttribute('aria-hidden', 'true');
   }
   function aiToggle() { if (S.ai.open) aiClose(); else aiOpen(); }
+
+  /* --------------------------------------------- Assistant as a page ------
+     The sidebar's Assistant tab shows the chat inline as a full page. Rather
+     than duplicate the chat markup (ids must stay unique), we move the single
+     #ai-drawer element into the page host while the tab is active and move it
+     back to <body> on leaving - all its event handlers survive the move. */
+  function aiDock() {
+    if (!(AI && AI.supported)) return;   // the tab is hidden when unsupported; guard anyway
+    var host = el('page-assistant'), d = el('ai-drawer');
+    if (!host || !d) return;
+    if (d.parentNode !== host) host.appendChild(d);
+    document.body.classList.add('ai-docked');
+    /* Drop any floating-mode sizing: an inline width from a past drag, or the
+       .ai-wide class, would otherwise beat the docked fill rule and leave the
+       page a narrow left-aligned column. The chosen width is restored on
+       undock / when the floating drawer is reopened. */
+    d.style.width = ''; d.classList.remove('ai-wide');
+    d.classList.add('ai-docked'); d.classList.remove('hidden'); d.setAttribute('aria-hidden', 'false');
+    S.ai.open = true;
+    aiRender();
+    setTimeout(function () {
+      var t = el((S.ai.connect || S.ai.needsKey) ? 'ai-key-input' : 'ai-text'); if (t) t.focus();
+    }, 30);
+  }
+  function aiUndock() {
+    if (!document.body.classList.contains('ai-docked')) return;
+    var d = el('ai-drawer');
+    document.body.classList.remove('ai-docked');
+    d.classList.remove('ai-docked'); d.classList.add('hidden'); d.setAttribute('aria-hidden', 'true');
+    if (d.parentNode !== document.body) document.body.appendChild(d);
+    S.ai.open = false;
+    aiApplyLayout();   // restore the floating drawer's remembered width / wide state
+  }
 
   /* ------------------------------------------------- drawer size/window ---
      The panel can be widened (remembered per browser), dragged to any width

@@ -26,6 +26,7 @@
       <button class="nav-item active" data-page="dashboard"><span class="nav-ic">▦</span><span>Dashboard</span></button>
       <button class="nav-item" data-page="wan"><span class="nav-ic">◎</span><span>WAN Estimator</span></button>
       <button class="nav-item" data-page="lan"><span class="nav-ic">⬡</span><span>LAN Estimator</span></button>
+      <button class="nav-item ai-nav hidden" data-page="assistant"><span class="nav-ic">✨</span><span>Assistant</span></button>
 
       <div class="nav-sep"></div>
       <div class="nav-section">Plan</div>
@@ -937,6 +938,10 @@
         </div>
       </div>
     </section>
+
+    <!-- Assistant as a full in-app page. The #ai-drawer element is moved in
+         here while this page is active, and moved back to <body> on leaving. -->
+    <section class="page" id="page-assistant"></section>
 
   </main>
 </div>

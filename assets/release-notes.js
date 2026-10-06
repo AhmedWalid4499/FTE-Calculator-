@@ -24,7 +24,8 @@ window.FTE_RELEASES = /*JSON*/{
       "features": [
         "The Assistant's answers now read properly: tables are real tables, with lists, headings and code laid out instead of one long line - so comparisons and breakdowns are easy to scan.",
         "Make it bigger: enlarge the Assistant with one click, or drag its left edge to any width. Your choice is remembered.",
-        "Open it in its own window: a focused, full-window chat you can keep beside the calculator - click the window icon in the Assistant's header.",
+        "Its own tab in the sidebar: open the Assistant as a full page next to your estimates, not just the slide-out panel.",
+        "Open it in its own window too: a focused, full-window chat you can keep beside the calculator - click the window icon in the Assistant's header.",
         "Reliability: fixed a case where the Assistant could show an error right after filling in an estimate on its own."
       ]
     },

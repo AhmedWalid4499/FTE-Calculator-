@@ -851,6 +851,22 @@ body.ai-solo .ai-resize, body.ai-solo #ai-expand, body.ai-solo #ai-pop { display
 body.ai-solo .ai-msgs { padding: 22px max(16px, calc((100% - 900px) / 2)); }
 body.ai-solo .ai-input { padding: 12px max(16px, calc((100% - 900px) / 2)); }
 
+/* --- Assistant docked as a full in-app page (the sidebar tab) --- */
+#page-assistant { padding: 0; }
+#page-assistant.active { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.ai-drawer.ai-docked {
+  position: static; width: 100%; max-width: 100%; height: auto;
+  flex: 1 1 auto; min-height: 0;
+  border-left: none; box-shadow: none; display: flex;
+}
+.ai-drawer.ai-docked .ai-resize,
+.ai-drawer.ai-docked #ai-pop,
+.ai-drawer.ai-docked #ai-expand,
+.ai-drawer.ai-docked #ai-close { display: none; }
+.ai-drawer.ai-docked .ai-msgs { min-height: 0; padding: 18px max(16px, calc((100% - 820px) / 2)); }
+.ai-drawer.ai-docked .ai-input { padding: 12px max(16px, calc((100% - 820px) / 2)); }
+body.ai-docked .ai-chip { display: none; }   /* floating entry point is redundant while docked */
+
 /* --- rich (markdown) assistant replies --- */
 .ai-msg.ai-md { white-space: normal; max-width: 100%; }
 .ai-md > *:first-child { margin-top: 0; }
