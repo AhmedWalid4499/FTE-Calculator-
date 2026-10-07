@@ -617,6 +617,10 @@
       inputFacts.splice(6, 0, ['Priced from', r.usedTierRows ? 'Tier rows' : ('Fallback tier ' + (r.fallbackTier || '')),
         r.usedTierRows ? 'Each tier row priced separately' : 'All sites priced at one tier']);
     }
+    inputFacts.push(['Out of business hours', i.outOfHours || 'Not known',
+      i.outOfHours === 'Yes'
+        ? ('Adds ' + (i.oobhUpliftPct != null ? i.oobhUpliftPct : '') + '% to the effort')
+        : 'No uplift applied']);
     inputFacts.push(['Effort distribution',
       isShaped(r) ? 'Bell curve (normal)' : 'Flat (even)',
       isShaped(r) ? 'Man-days ramp to a mid-project peak and back down'
@@ -625,18 +629,31 @@
 
     var plannedStart = startMonthLabel(record);
 
+    var oobhCaption = (i.oobhUpliftPct != null ? i.oobhUpliftPct : '') + '% uplift for out-of-hours work';
+    var totalCaption = 'Allocation rows (' + r.baseMd + ' MD)' +
+      (isWan && r.migrationMd ? ' + migration (' + r.migrationMd + ')' : '') +
+      (r.oobhMd ? ' + out-of-hours (' + r.oobhMd + ')' : '');
     var resultFacts = [
-      ['Total effort (MD)', r.totalMd, 'Sum of every allocation row' + (isWan && r.migrationMd ? ' plus the migration uplift' : '')],
+      ['Total effort (MD)', r.totalMd, totalCaption],
       [isShaped(r) ? 'Average effort per month (MD)' : 'Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
       [isShaped(r) ? 'FTE (average)' : 'FTE required', r.fte, r.mdPerMonth + ' MD per month / ' + i.capacityMdPerMonth + ' MD capacity'],
       ['Headcount', r.headcount, 'FTE rounded up to whole people'],
       ['Utilisation (%)', r.utilisationPct, r.fte + ' FTE / ' + r.headcount + ' headcount']
     ];
+    /* Breakdown lines so the parts reconcile with Total effort. WAN always
+       shows base + migration; an out-of-hours line is added for either when
+       the uplift applied. */
+    var breakdown = [];
     if (isWan) {
-      resultFacts.unshift(['Migration uplift (MD)', r.migrationMd, i.migration === 'Yes'
+      breakdown.push(['Base effort (MD)', r.baseMd, 'Allocation rows only']);
+      breakdown.push(['Migration uplift (MD)', r.migrationMd, i.migration === 'Yes'
         ? (i.migrationMdPerSite + ' MD x ' + i.totalSites + ' sites') : 'Not in scope']);
-      resultFacts.unshift(['Base effort (MD)', r.baseMd, 'Allocation rows only']);
+      if (r.oobhMd) breakdown.push(['Out-of-hours uplift (MD)', r.oobhMd, oobhCaption]);
+    } else if (r.oobhMd) {
+      breakdown.push(['Base effort (MD)', r.baseMd, 'Tier rows only']);
+      breakdown.push(['Out-of-hours uplift (MD)', r.oobhMd, oobhCaption]);
     }
+    resultFacts = breakdown.concat(resultFacts);
     if (isShaped(r)) {
       resultFacts.push(['Busiest month', 'Month ' + r.peakMonth, 'Peak of the bell curve']);
       resultFacts.push(['Peak effort per month (MD)', r.peakMd, 'The busiest month of the curve']);
@@ -656,6 +673,10 @@
          ['FLAN used', i.flan, 'Reporting only'],
          ['Device count', i.devices, 'Only used when no tier rows were entered'],
          ['DPM acting as PM', i.pmRole, 'Reporting only']];
+    recorded = recorded.concat([
+      ['Project HQ country', (i.country ? D.countryName(i.country) : '') || '-', 'Shown on the Project map'],
+      ['Required languages', (i.languages && i.languages.length ? i.languages.join(', ') : '') || '-', 'Language(s) the DPM/PM needs']
+    ]);
     row = addFactTable(ws, row, 'Recorded only - does not affect the result', recorded, { theme: 'TableStyleLight10' });
 
     var notesText = (record.notes || '').trim();
@@ -745,14 +766,16 @@
       });
     }
 
-    /* The table above totals the allocation rows only. When a migration uplift
-       applies, that total is deliberately smaller than the project total shown
-       at the top of the sheet, so say so rather than leave two figures that
-       look like they disagree. */
-    if (isWan && r.migrationMd > 0) {
+    /* The table above totals the allocation rows only. When a migration and/or
+       out-of-hours uplift applies, that total is deliberately smaller than the
+       project total shown at the top of the sheet, so say so rather than leave
+       two figures that look like they disagree. */
+    if (r.migrationMd > 0 || r.oobhMd > 0) {
+      var upParts = [];
+      if (r.migrationMd > 0) upParts.push('migration support adds ' + r.migrationMd + ' MD across ' + i.totalSites + ' sites');
+      if (r.oobhMd > 0) upParts.push('out-of-hours work adds ' + r.oobhMd + ' MD');
       arow = note(as, arow, 'The TOTAL row above is the base effort from the allocation rows (' + r.baseMd +
-        ' MD). Migration support adds a further ' + r.migrationMd + ' MD across ' + i.totalSites +
-        ' sites, giving ' + r.totalMd + ' MD for the project.');
+        ' MD). On top of that, ' + upParts.join(', and ') + ', giving ' + r.totalMd + ' MD for the project.');
       arow += 1;
     }
 
@@ -766,8 +789,10 @@
         { name: 'How it was derived', width: 52 }
       ],
       rows: [
-        ['Total effort (MD)', r.totalMd, (isWan && r.migrationMd > 0)
-          ? ('Allocation rows ' + r.baseMd + ' MD + migration uplift ' + r.migrationMd + ' MD')
+        ['Total effort (MD)', r.totalMd, (r.migrationMd > 0 || r.oobhMd > 0)
+          ? ('Allocation rows ' + r.baseMd + ' MD' +
+             (r.migrationMd > 0 ? ' + migration uplift ' + r.migrationMd + ' MD' : '') +
+             (r.oobhMd > 0 ? ' + out-of-hours uplift ' + r.oobhMd + ' MD' : ''))
           : 'Sum of the Row effort column above'],
         ['Effort per month (MD)', r.mdPerMonth, r.totalMd + ' MD / ' + i.months + ' months'],
         ['FTE required', r.fte, r.mdPerMonth + ' MD per month / ' + i.capacityMdPerMonth + ' MD capacity per DPM'],

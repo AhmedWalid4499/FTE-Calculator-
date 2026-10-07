@@ -183,12 +183,28 @@
 
   var DPM_ROLES = ['DPM', 'Lead DPM', 'DPM + PM'];
 
+  /* Languages a project may need the DPM/PM to speak. Recorded on the estimate
+     for staffing; selecting none means "no specific requirement". */
+  var LANGUAGES = [
+    'English', 'French', 'Arabic', 'Spanish', 'German', 'Italian',
+    'Dutch', 'Portuguese', 'Polish', 'Russian', 'Mandarin', 'Turkish'
+  ];
+
+  /* Country list (code/name/lat/lon) for the Country field and the Map tab,
+     loaded from assets/countries.js just before this file. */
+  var COUNTRIES = (global.FTE_COUNTRIES || []).slice();
+  var COUNTRY_BY_CODE = {};
+  COUNTRIES.forEach(function (c) { COUNTRY_BY_CODE[c.code] = c; });
+  function countryName(code) { var c = COUNTRY_BY_CODE[code]; return c ? c.name : (code || ''); }
+  function country(code) { return COUNTRY_BY_CODE[code] || null; }
+
   /* --------------------------------------------------------- defaults --- */
 
   var DEFAULT_SETTINGS = {
     capacityMdPerMonth: 18,   // productive man-days one full-time DPM delivers per month
     defaultComplexity: 100,   // percent
     migrationMdPerSite: 0.5,  // uplift applied per site when WAN migration support is in scope
+    oobhUpliftPct: 15,        // % added to the effort when out-of-business-hours work is in scope
     dateDaysPerMonth: 30.44,  // average calendar month, used to convert a date range to months
     emailTo: '',              // default recipient for the result email (blank = fill in Outlook)
     emailCc: 'karim.elzarka.ext@orange.com',
@@ -286,6 +302,10 @@
     totalSites:   'The number of sites in the whole project. Your allocation rows must add up to exactly this number before the estimate will run - that check is what stops sites being double-counted or forgotten.',
     projectType:  'Overlay, Underlay or Both. Recorded for reporting only - it does not change the calculated effort.',
     migration:    'When migration support is in scope, an extra 0.5 man-days per site is added on top of the product effort, covering cut-over coordination and rollback readiness.',
+    outOfHours:   'Whether the work must happen outside normal business hours (nights/weekends). "Yes" adds an effort uplift (set in Settings, default 15%) on top of the base effort, for the extra coordination and unsocial-hours overhead. "No" and "Not known" add nothing.',
+    oobhUplift:   'The percentage added to an estimate when "Out of business hours" is set to Yes. Applied to the base effort (plus any WAN migration uplift). Set to 0 to record out-of-hours work without changing the effort.',
+    country:      'The country where the project HQ is. Recorded on the estimate and used to place it on the Project map. It does not change the calculated effort.',
+    languages:    'Languages the assigned DPM or PM needs to speak for this project. Recorded for staffing and shown in exports and on the map; it does not change the effort. Select none for no specific requirement.',
     abacos:       'Records whether ABACOS applies. Recorded only - it does not change the calculated effort.',
     flan:         'Records whether FLAN is used. Recorded only - it does not change the calculated effort.',
     routers:      'Device count used only when you have not entered any tier rows. It selects a single fallback tier for the whole project. If you add tier rows, this value is ignored.',
@@ -375,6 +395,10 @@
     stageBreakdown: stageBreakdown,
     DPMS: DPMS,
     DPM_ROLES: DPM_ROLES,
+    LANGUAGES: LANGUAGES,
+    COUNTRIES: COUNTRIES,
+    countryName: countryName,
+    country: country,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     TEAM_FOLDER: TEAM_FOLDER,
     teamFolderWebPath: teamFolderWebPath,

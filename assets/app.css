@@ -552,20 +552,31 @@ td.actions { width: 1%; white-space: nowrap; }
 /* ======================================================== stage picker === */
 
 .stage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-2); }
-.stage-chip {
+.stage-chip, .lang-chip {
   background: var(--surface-2); border: 1.5px solid var(--border); border-radius: var(--r-sm);
   padding: 10px 12px; cursor: pointer; display: flex; align-items: center; gap: 9px;
   font-size: .82rem; font-weight: 500; color: var(--text-2); transition: all .13s;
   user-select: none; text-align: left; font-family: inherit; width: 100%;
 }
-.stage-chip:hover { border-color: var(--border-strong); color: var(--text); }
-.stage-chip.checked { background: var(--info-bg); border-color: var(--accent); color: var(--accent); }
+.stage-chip:hover, .lang-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.stage-chip.checked, .lang-chip.checked { background: var(--info-bg); border-color: var(--accent); color: var(--accent); }
 .stage-box {
   width: 16px; height: 16px; border: 1.5px solid var(--border-strong); border-radius: 4px;
   display: flex; align-items: center; justify-content: center; font-size: .64rem;
   transition: all .13s; flex-shrink: 0; color: transparent;
 }
-.stage-chip.checked .stage-box { background: var(--accent); border-color: var(--accent); color: #fff; }
+.stage-chip.checked .stage-box, .lang-chip.checked .stage-box { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip-row-toggle { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.chip-row-toggle .lang-chip { width: auto; padding: 7px 11px; }
+
+/* --- Project map tab --- */
+.map-canvas { height: 62vh; min-height: 420px; width: 100%; border-radius: var(--r-md); overflow: hidden; background: var(--surface-2); z-index: 0; }
+.map-note { padding: var(--sp-5); text-align: center; color: var(--text-3); font-size: .9rem; line-height: 1.6; }
+.leaflet-popup-content { font: inherit; font-size: .82rem; }
+.leaflet-popup-content b { color: var(--text); }
+.map-pop-title { font-weight: 700; font-size: .9rem; margin-bottom: 2px; }
+.map-pop-sub { color: var(--text-3); font-size: .76rem; margin-bottom: 6px; }
+.map-pop-list { margin: 4px 0 0; padding-left: 16px; }
 .stage-hours { margin-left: auto; font-family: var(--mono); font-size: .7rem; color: var(--text-4); }
 
 /* ============================================================== lists === */

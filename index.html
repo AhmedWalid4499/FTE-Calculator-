@@ -31,6 +31,7 @@
       <div class="nav-sep"></div>
       <div class="nav-section">Plan</div>
       <button class="nav-item" data-page="capacity"><span class="nav-ic">▤</span><span>Team capacity</span></button>
+      <button class="nav-item" data-page="map"><span class="nav-ic">🗺</span><span>Project map</span></button>
 
       <div class="nav-sep"></div>
       <div class="nav-section">Data</div>
@@ -226,13 +227,22 @@
             </div>
             <span class="field-help" id="w-mode-help">Rates come from the published rate card.</span>
           </div>
+          <div class="field">
+            <span class="field-label" data-help="outOfHours">Out of business hours</span>
+            <div class="segmented" id="w-oobh" role="group" aria-label="Out of business hours">
+              <button type="button" data-val="Not known" class="active">Not known</button>
+              <button type="button" data-val="No">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+            <span class="field-help">Yes adds the out-of-hours uplift (<b id="w-oobh-pct">15</b>%), set in Settings.</span>
+          </div>
         </div>
 
         <div class="callout neutral">
           <span class="callout-ic">ℹ</span>
-          <span>The fields below are stored with the estimate and appear in exports for reporting, but they do <b>not</b> change the calculated effort.</span>
+          <span>The fields below are stored with the estimate and appear in exports and on the Project map, but they do <b>not</b> change the calculated effort.</span>
         </div>
-        <div class="grid g3 mb-0">
+        <div class="grid g3">
           <div class="field">
             <label for="w-type" data-help="projectType">Project type <span class="tag tag-muted">recorded only</span></label>
             <select id="w-type"><option>Overlay</option><option>Underlay</option><option>Both</option></select>
@@ -244,7 +254,15 @@
               <button type="button" data-val="Yes">Yes</button>
             </div>
           </div>
-          <div class="field"></div>
+          <div class="field">
+            <label for="w-country" data-help="country">Project HQ country <span class="tag tag-muted">recorded only</span></label>
+            <select id="w-country"><option value="">— Select —</option></select>
+          </div>
+        </div>
+        <div class="field mt-3 mb-0">
+          <span class="field-label" data-help="languages">Required language(s) <span class="tag tag-muted">recorded only</span></span>
+          <div class="chip-row-toggle" id="w-langs"></div>
+          <span class="field-help">Languages the DPM/PM needs to speak. Select none for no specific requirement.</span>
         </div>
       </div>
 
@@ -472,6 +490,29 @@
           </div>
           <div id="l-stages-anchor"></div>
         </div>
+
+        <div class="divider"><span>Project profile</span></div>
+        <div class="grid g3">
+          <div class="field">
+            <span class="field-label" data-help="outOfHours">Out of business hours <span class="tag tag-muted">affects effort</span></span>
+            <div class="segmented" id="l-oobh" role="group" aria-label="Out of business hours">
+              <button type="button" data-val="Not known" class="active">Not known</button>
+              <button type="button" data-val="No">No</button>
+              <button type="button" data-val="Yes">Yes</button>
+            </div>
+            <span class="field-help">Yes adds the out-of-hours uplift (<b id="l-oobh-pct">15</b>%), set in Settings.</span>
+          </div>
+          <div class="field">
+            <label for="l-country" data-help="country">Project HQ country <span class="tag tag-muted">recorded only</span></label>
+            <select id="l-country"><option value="">— Select —</option></select>
+          </div>
+          <div class="field"></div>
+        </div>
+        <div class="field mt-3 mb-0">
+          <span class="field-label" data-help="languages">Required language(s) <span class="tag tag-muted">recorded only</span></span>
+          <div class="chip-row-toggle" id="l-langs"></div>
+          <span class="field-help">Languages the DPM/PM needs to speak. Select none for no specific requirement.</span>
+        </div>
       </div>
 
       <div class="card">
@@ -651,6 +692,28 @@
           calendar — it is saved back onto the estimate, so everyone sharing the data folder sees the same plan.
         </p>
         <div id="cap-projects"></div>
+      </div>
+    </section>
+
+    <!-- ═════════════════════════════════════════════════════ MAP ══════ -->
+    <section class="page" id="page-map">
+      <div class="page-head">
+        <h2>Project map</h2>
+        <p>Where the saved estimates are, by project HQ country. Bigger circles mean more projects there. The map needs an internet connection to load.</p>
+      </div>
+      <div class="card">
+        <div class="card-head"><div class="card-title"><span class="dot"></span>Filter</div>
+          <span id="map-count" class="tag tag-muted"></span>
+        </div>
+        <div class="grid g3 mb-0">
+          <div class="field"><label for="map-type">Type</label><select id="map-type"><option value="">All types</option><option>WAN</option><option>LAN</option></select></div>
+          <div class="field"><label for="map-status">Status</label><select id="map-status"><option value="">All statuses</option><option>Active</option><option>Inactive</option></select></div>
+          <div class="field"><label for="map-metric">Size circles by</label><select id="map-metric"><option value="count">Number of estimates</option><option value="fte">Total FTE</option></select></div>
+        </div>
+      </div>
+      <div class="card mb-0">
+        <div id="map-canvas" class="map-canvas"></div>
+        <div id="map-note" class="map-note hidden"></div>
       </div>
     </section>
 
@@ -908,6 +971,11 @@
             <input type="number" id="set-complexity" min="1" max="500" step="1">
             <span class="field-help">Pre-filled on new allocation rows. Default 100.</span>
           </div>
+          <div class="field">
+            <label for="set-oobh" data-help="oobhUplift">Out-of-hours uplift %</label>
+            <input type="number" id="set-oobh" min="0" max="200" step="1">
+            <span class="field-help">Added to an estimate when "Out of business hours" is Yes. Default 15. Set 0 to disable.</span>
+          </div>
         </div>
         <div class="btn-row">
           <button class="btn btn-primary" id="set-save">Save settings</button>
@@ -1013,6 +1081,7 @@
 <script src="lib/exceljs.min.js"></script>
 <script src="assets/dpm-directory.js"></script>
 <script src="assets/release-notes.js"></script>
+<script src="assets/countries.js"></script>
 <script src="assets/data.js"></script>
 <script src="assets/calc.js"></script>
 <script src="assets/db.js"></script>

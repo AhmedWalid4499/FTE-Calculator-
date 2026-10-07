@@ -316,10 +316,24 @@
       });
     }
 
-    var totalMd = baseMd + migrationMd;
+    /* Out-of-business-hours work adds a configurable % on top of the base
+       effort (plus migration), for the unsocial-hours coordination overhead. */
+    var oobhPct = num(s.oobhUpliftPct, 0);
+    var preOobh = baseMd + migrationMd;
+    var oobhMd = (input.outOfHours === 'Yes' && oobhPct > 0) ? preOobh * (oobhPct / 100) : 0;
+    if (oobhMd > 0) {
+      steps.push({
+        label: 'Out-of-hours uplift',
+        formula: oobhPct + '% of ' + round(preOobh, 3) + ' MD',
+        value: '+ ' + round(oobhMd, 3) + ' MD'
+      });
+    }
+
+    var totalMd = preOobh + oobhMd;
     steps.push({
       label: 'Total project effort',
-      formula: round(baseMd, 3) + ' MD' + (migration ? ' + ' + round(migrationMd, 3) + ' MD migration' : ''),
+      formula: round(baseMd, 3) + ' MD' + (migration ? ' + ' + round(migrationMd, 3) + ' MD migration' : '') +
+               (oobhMd > 0 ? ' + ' + round(oobhMd, 3) + ' MD out-of-hours' : ''),
       value: round(totalMd, 3) + ' MD'
     });
 
@@ -327,6 +341,8 @@
     out.rows = withShares(rows, totalMd);
     out.baseMd = round(baseMd, 3);
     out.migrationMd = round(migrationMd, 3);
+    out.oobhMd = round(oobhMd, 3);
+    out.outOfHours = input.outOfHours || '';
     out.steps = steps;
     out.ok = true;
     out.errors = [];
@@ -476,10 +492,26 @@
       value: round(totalMd, 3) + ' MD'
     });
 
+    /* Out-of-business-hours uplift, same configurable % as WAN. */
+    var oobhPct = num(s.oobhUpliftPct, 0);
+    var preOobh = totalMd;
+    var oobhMd = (input.outOfHours === 'Yes' && oobhPct > 0) ? preOobh * (oobhPct / 100) : 0;
+    if (oobhMd > 0) {
+      steps.push({
+        label: 'Out-of-hours uplift',
+        formula: oobhPct + '% of ' + round(preOobh, 3) + ' MD',
+        value: '+ ' + round(oobhMd, 3) + ' MD'
+      });
+      totalMd = preOobh + oobhMd;
+      steps.push({ label: 'Total project effort', formula: round(preOobh, 3) + ' MD + ' + round(oobhMd, 3) + ' MD out-of-hours', value: round(totalMd, 3) + ' MD' });
+    }
+
     var out = finalise(totalMd, months, capacity, steps, { distribution: distribution });
     out.rows = withShares(rows, totalMd);
-    out.baseMd = round(totalMd, 3);
+    out.baseMd = round(preOobh, 3);
     out.migrationMd = 0;
+    out.oobhMd = round(oobhMd, 3);
+    out.outOfHours = input.outOfHours || '';
     out.steps = steps;
     out.ok = true;
     out.errors = [];

@@ -64,6 +64,7 @@ $scripts = @(
     'lib\exceljs.min.js',
     'assets\dpm-directory.js',
     'assets\release-notes.js',
+    'assets\countries.js',
     'assets\data.js',
     'assets\calc.js',
     'assets\db.js',

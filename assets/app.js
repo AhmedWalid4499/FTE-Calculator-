@@ -38,7 +38,7 @@
   var PAGE_TITLES = {
     dashboard: 'Dashboard', wan: 'WAN Estimator', lan: 'LAN Estimator',
     assistant: 'Assistant',
-    capacity: 'Team capacity',
+    capacity: 'Team capacity', map: 'Project map',
     records: 'FTE Records', projects: 'Projects', dpms: 'DPM Directory',
     reference: 'Rates & Method', settings: 'Settings'
   };
@@ -88,6 +88,7 @@
     el('page-title').textContent = PAGE_TITLES[page] || page;
 
     if (page === 'assistant') { aiDock(); return; }
+    if (page === 'map') renderMap();
     if (page === 'records') { renderRecords(); showRecordsTab(S.recTab || 'list'); }
     if (page === 'capacity') renderCapacityPage(true);
     if (page === 'projects') renderProjects();
@@ -1120,6 +1121,7 @@
       totalSites: numVal('w-sites'),
       mode: segValue('w-mode'),
       migration: segValue('w-migration'),
+      outOfHours: segValue('w-oobh'),
       distribution: segValue('w-dist'),
       allocation: S.wan.rows.map(function (r) { return Object.assign({}, r); })
     };
@@ -1133,6 +1135,7 @@
       mode: segValue('l-mode'),
       stages: selectedStages(),
       fallbackOverride: numVal('l-fb-ovrd') || null,
+      outOfHours: segValue('l-oobh'),
       distribution: segValue('l-dist'),
       allocation: S.lan.rows.map(function (r) { return Object.assign({}, r); })
     };
@@ -1169,17 +1172,21 @@
         totalSites: input.totalSites,
         mode: input.mode,
         migration: input.migration,
+        outOfHours: input.outOfHours,
         projectType: val('w-type'),
         abacos: segValue('w-abacos'),
         pmRole: segValue('w-pm-role'),
+        country: val('w-country'),
+        languages: selectedLangs('wan'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
         migrationMdPerSite: S.settings.migrationMdPerSite,
+        oobhUpliftPct: S.settings.oobhUpliftPct,
         distribution: result.distribution,
         allocation: input.allocation
       },
       dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); }),
       results: {
-        rows: result.rows, baseMd: result.baseMd, migrationMd: result.migrationMd,
+        rows: result.rows, baseMd: result.baseMd, migrationMd: result.migrationMd, oobhMd: result.oobhMd,
         totalMd: result.totalMd, mdPerMonth: result.mdPerMonth, fte: result.fte,
         headcount: result.headcount, utilisationPct: result.utilisationPct,
         monthly: result.monthly, steps: result.steps, warnings: result.warnings,
@@ -1218,15 +1225,19 @@
         mode: input.mode,
         stages: input.stages,
         fallbackOverride: input.fallbackOverride,
+        outOfHours: input.outOfHours,
         flan: segValue('l-flan'),
         pmRole: segValue('l-pm-role'),
+        country: val('l-country'),
+        languages: selectedLangs('lan'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
+        oobhUpliftPct: S.settings.oobhUpliftPct,
         distribution: result.distribution,
         allocation: input.allocation
       },
       dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); }),
       results: {
-        rows: result.rows, baseMd: result.baseMd, migrationMd: 0,
+        rows: result.rows, baseMd: result.baseMd, migrationMd: 0, oobhMd: result.oobhMd,
         totalMd: result.totalMd, mdPerMonth: result.mdPerMonth, fte: result.fte,
         headcount: result.headcount, utilisationPct: result.utilisationPct,
         monthly: result.monthly, steps: result.steps, warnings: result.warnings,
@@ -2786,6 +2797,11 @@
     var infoRows = rec.type === 'WAN'
       ? [['Project type', i.projectType], ['ABACOS', i.abacos], ['DPM acting as PM', i.pmRole]]
       : [['FLAN used', i.flan], ['DPM acting as PM', i.pmRole], ['Device count', i.devices]];
+    infoRows = infoRows.concat([
+      ['HQ country', i.country ? D.countryName(i.country) : ''],
+      ['Out of business hours', i.outOfHours],
+      ['Required languages', (i.languages || []).join(', ')]
+    ]);
 
     U.dialog({
       title: rec.projectName + ' — ' + rec.type,
@@ -3042,6 +3058,108 @@
       '<tfoot><tr><td>Everyone</td><td class="num">' + fmt.int(tC) + '</td><td class="num">' + fmt.int(tS) +
       '</td><td class="num">' + fmt.md1(tMd) + '</td><td class="num">' + fmt.fte(tFte) + '</td><td class="num">—</td></tr></tfoot>' +
       '</table></div>';
+  }
+
+  /* ============================================================== map === */
+
+  /* Leaflet is loaded from a CDN only when the Map tab is first opened, so the
+     rest of the app has no dependency on it and works offline. */
+  var _leafletLoading = null;
+  function loadLeaflet() {
+    if (global.L) return Promise.resolve(global.L);
+    if (_leafletLoading) return _leafletLoading;
+    _leafletLoading = new Promise(function (resolve, reject) {
+      var base = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
+      var css = document.createElement('link');
+      css.rel = 'stylesheet'; css.href = base + 'leaflet.css';
+      document.head.appendChild(css);
+      var s = document.createElement('script');
+      s.src = base + 'leaflet.js'; s.async = true;
+      var done = false;
+      var timer = setTimeout(function () { if (!done) { done = true; _leafletLoading = null; reject(new Error('timeout')); } }, 12000);
+      s.onload = function () { if (!done) { done = true; clearTimeout(timer); resolve(global.L); } };
+      s.onerror = function () { if (!done) { done = true; clearTimeout(timer); _leafletLoading = null; reject(new Error('load failed')); } };
+      document.head.appendChild(s);
+    });
+    return _leafletLoading;
+  }
+
+  function mapFilteredRecords() {
+    var type = val('map-type'), status = val('map-status');
+    return (S.records || []).filter(function (r) {
+      if (type && r.type !== type) return false;
+      if (status && r.status !== status) return false;
+      return true;
+    });
+  }
+
+  var _map = null, _mapLayer = null;
+  function renderMap() {
+    if (!paneVisible('page-map')) return;
+    var note = el('map-note'), canvas = el('map-canvas');
+    loadLeaflet().then(function (L) {
+      note.classList.add('hidden');
+      canvas.style.display = '';
+      if (!_map) {
+        _map = L.map(canvas, { worldCopyJump: true });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(_map);
+        _map.setView([25, 10], 2);
+      }
+      drawMapMarkers(L);
+      setTimeout(function () { if (_map) _map.invalidateSize(); }, 60);
+    }).catch(function () {
+      if (canvas) canvas.style.display = 'none';
+      if (note) {
+        note.classList.remove('hidden');
+        note.innerHTML = 'The map could not be loaded. It needs an internet connection — it fetches the base map from the OpenStreetMap service — so it does not work offline or in the portable single-file build. The country on each estimate is still saved and shown in FTE Records.';
+      }
+    });
+  }
+
+  function drawMapMarkers(L) {
+    if (!_map) return;
+    if (_mapLayer) { _map.removeLayer(_mapLayer); _mapLayer = null; }
+    _mapLayer = L.layerGroup().addTo(_map);
+    var metric = val('map-metric') || 'count';
+    var recs = mapFilteredRecords();
+    var by = {};
+    recs.forEach(function (r) {
+      var code = r.inputs && r.inputs.country;
+      if (!code) return;
+      var c = D.country(code); if (!c) return;
+      if (!by[code]) by[code] = { c: c, count: 0, fte: 0, wan: 0, lan: 0, names: [] };
+      var g = by[code];
+      g.count += 1;
+      g.fte += (r.results && r.results.fte) || 0;
+      if (r.type === 'WAN') g.wan++; else if (r.type === 'LAN') g.lan++;
+      if (g.names.length < 12 && g.names.indexOf(r.projectName) < 0) g.names.push(r.projectName);
+    });
+    var codes = Object.keys(by);
+    var withCountry = recs.filter(function (r) { return r.inputs && r.inputs.country && D.country(r.inputs.country); }).length;
+    var cc = el('map-count');
+    if (cc) cc.textContent = withCountry + ' of ' + recs.length + ' have a country · ' + codes.length + ' countr' + (codes.length === 1 ? 'y' : 'ies');
+    if (!codes.length) return;
+    var maxVal = 1;
+    codes.forEach(function (k) { var v = metric === 'fte' ? by[k].fte : by[k].count; if (v > maxVal) maxVal = v; });
+    var pts = [];
+    codes.forEach(function (k) {
+      var g = by[k];
+      var v = metric === 'fte' ? g.fte : g.count;
+      var radius = 8 + 26 * Math.sqrt(v / maxVal);
+      var m = L.circleMarker([g.c.lat, g.c.lon], {
+        radius: radius, color: '#2563eb', weight: 1.5, fillColor: '#2563eb', fillOpacity: 0.45
+      });
+      var html = '<div class="map-pop-title">' + esc(g.c.name) + '</div>' +
+        '<div class="map-pop-sub">' + g.count + ' estimate(s) · ' + g.wan + ' WAN / ' + g.lan + ' LAN · ' + fmt.fte(g.fte) + ' FTE total</div>' +
+        '<ul class="map-pop-list">' + g.names.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>';
+      m.bindPopup(html);
+      m.addTo(_mapLayer);
+      pts.push([g.c.lat, g.c.lon]);
+    });
+    if (pts.length === 1) _map.setView(pts[0], 4);
+    else _map.fitBounds(pts, { padding: [40, 40], maxZoom: 6 });
   }
 
   /* ======================================================= team capacity = */
@@ -3426,6 +3544,7 @@
         startMonth: val('w-start-month'),
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
+        outOfHours: segValue('w-oobh'), country: val('w-country'), languages: selectedLangs('wan'),
         distribution: segValue('w-dist'), notes: (val('w-notes') || '').trim(),
         rows: S.wan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); })
@@ -3437,6 +3556,7 @@
         sites: numVal('l-sites') || null, devices: numVal('l-devices'),
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
+        outOfHours: segValue('l-oobh'), country: val('l-country'), languages: selectedLangs('lan'),
         distribution: segValue('l-dist'), notes: (val('l-notes') || '').trim(),
         rows: S.lan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); })
@@ -3469,6 +3589,9 @@
     if (w.migration) setSeg('w-migration', w.migration);
     if (w.abacos) setSeg('w-abacos', w.abacos);
     if (w.mode) setSeg('w-mode', w.mode);
+    if (w.outOfHours) setSeg('w-oobh', w.outOfHours);
+    setVal('w-country', w.country || '');
+    setLangChips('wan', w.languages);
     setSeg('w-dist', w.distribution === 'bell' ? 'bell' : 'flat');
     setVal('w-notes', w.notes || '');
 
@@ -3484,6 +3607,9 @@
     if (l.flan) setSeg('l-flan', l.flan);
     if (l.mode) setSeg('l-mode', l.mode);
     setVal('l-fb-ovrd', l.fallbackOverride || '');
+    if (l.outOfHours) setSeg('l-oobh', l.outOfHours);
+    setVal('l-country', l.country || '');
+    setLangChips('lan', l.languages);
     setSeg('l-dist', l.distribution === 'bell' ? 'bell' : 'flat');
     setVal('l-notes', l.notes || '');
 
@@ -3990,6 +4116,7 @@
     setVal('set-capacity', S.settings.capacityMdPerMonth);
     setVal('set-migration', S.settings.migrationMdPerSite);
     setVal('set-complexity', S.settings.defaultComplexity);
+    setVal('set-oobh', S.settings.oobhUpliftPct);
     setVal('set-email-to', S.settings.emailTo || '');
     setVal('set-email-cc', S.settings.emailCc || '');
     setVal('set-email-subject', S.settings.emailSubject || '');
@@ -4323,23 +4450,28 @@
     var capacity = numVal('set-capacity');
     var migration = numVal('set-migration');
     var complexity = numVal('set-complexity');
+    var oobh = numVal('set-oobh');
     U.clearFieldErrors();
     if (!(capacity > 0)) { U.showFieldError('set-capacity', 'Capacity must be greater than zero.'); return; }
     if (migration < 0) { U.showFieldError('set-migration', 'The migration uplift cannot be negative.'); return; }
     if (!(complexity > 0)) { U.showFieldError('set-complexity', 'Default complexity must be greater than zero.'); return; }
+    if (oobh < 0) { U.showFieldError('set-oobh', 'The out-of-hours uplift cannot be negative.'); return; }
 
     S.settings.capacityMdPerMonth = capacity;
     S.settings.migrationMdPerSite = migration;
     S.settings.defaultComplexity = complexity;
+    S.settings.oobhUpliftPct = oobh;
 
     Promise.all([
       DB.setSetting('capacityMdPerMonth', capacity),
       DB.setSetting('migrationMdPerSite', migration),
-      DB.setSetting('defaultComplexity', complexity)
+      DB.setSetting('defaultComplexity', complexity),
+      DB.setSetting('oobhUpliftPct', oobh)
     ]).then(function () {
       referenceBuilt = false;
       U.toast('Settings saved. They apply to new calculations.', 'ok');
       updateMigrationHelp();
+      updateOobhHelp();
     });
   }
 
@@ -4863,6 +4995,38 @@
     D.LAN_TIER_LABELS.forEach(function (t) { tier.add(new Option(t, t)); });
     setVal('w-add-complexity', S.settings.defaultComplexity);
     setVal('l-add-complexity', S.settings.defaultComplexity);
+    ['w-country', 'l-country'].forEach(function (id) {
+      var sel = el(id); if (!sel) return;
+      D.COUNTRIES.forEach(function (c) { sel.add(new Option(c.name, c.code)); });
+    });
+    renderLangChips('wan'); renderLangChips('lan');
+    updateOobhHelp();
+  }
+
+  /* Required-language chips (recorded only), one toggle per language. */
+  function selectedLangs(side) {
+    return qsa('#' + prefix(side) + '-langs .lang-chip.checked').map(function (n) { return n.getAttribute('data-lang'); });
+  }
+  function renderLangChips(side) {
+    var host = el(prefix(side) + '-langs'); if (!host) return;
+    var current = selectedLangs(side);
+    host.innerHTML = D.LANGUAGES.map(function (name) {
+      var on = current.indexOf(name) >= 0;
+      return '<button type="button" class="lang-chip' + (on ? ' checked' : '') + '" data-lang="' + esc(name) +
+             '" aria-pressed="' + on + '"><span class="stage-box">✓</span><span>' + esc(name) + '</span></button>';
+    }).join('');
+  }
+  function setLangChips(side, langs) {
+    langs = langs || [];
+    qsa('#' + prefix(side) + '-langs .lang-chip').forEach(function (n) {
+      var on = langs.indexOf(n.getAttribute('data-lang')) >= 0;
+      n.classList.toggle('checked', on); n.setAttribute('aria-pressed', String(on));
+    });
+  }
+  function updateOobhHelp() {
+    var p = S.settings.oobhUpliftPct;
+    if (p === undefined || p === null) p = D.DEFAULT_SETTINGS.oobhUpliftPct;
+    ['w-oobh-pct', 'l-oobh-pct'].forEach(function (id) { var e = el(id); if (e) e.textContent = p; });
   }
 
   function bindEvents() {
@@ -4899,6 +5063,14 @@
         stage.setAttribute('aria-pressed', String(on));
         renderStageSummary();
         renderLanRows();
+        return;
+      }
+
+      var lang = e.target.closest('.lang-chip');
+      if (lang) {
+        var langOn = !lang.classList.contains('checked');
+        lang.classList.toggle('checked', langOn);
+        lang.setAttribute('aria-pressed', String(langOn));
         return;
       }
 
@@ -5081,6 +5253,11 @@
     });
     el('rec-export-all').addEventListener('click', function () { EX.exportAllRecords(filteredRecords()); });
 
+    /* Project map */
+    ['map-type', 'map-status', 'map-metric'].forEach(function (id) {
+      var e2 = el(id); if (e2) e2.addEventListener('change', function () { renderMap(); });
+    });
+
     /* Projects */
     el('proj-import-btn').addEventListener('click', function () { el('proj-import-file').click(); });
     el('proj-import-file').addEventListener('change', function () { importProjectFile(this); });
@@ -5234,6 +5411,7 @@
         setVal('w-add-complexity', S.settings.defaultComplexity);
         setVal('l-add-complexity', S.settings.defaultComplexity);
         updateMigrationHelp();
+        updateOobhHelp();
         return resolveIdentity();
       })
       /* With the launcher, link the synced SharePoint team folder by itself. */
