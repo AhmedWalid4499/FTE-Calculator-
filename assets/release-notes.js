@@ -14,9 +14,20 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.6.0",
+  "version": "2.7.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.7.0",
+      "date": "2026-10-07",
+      "title": "Project map, country & out-of-hours",
+      "features": [
+        "New Project map tab: every saved estimate shown on a world map by its HQ country, with a circle per country sized by how many estimates (or total FTE) are there, and filters for type and status. Needs an internet connection; it degrades gracefully offline.",
+        "New project details on WAN and LAN estimates: the project HQ country, whether the work is out of business hours (Yes / No / Not known), and the language(s) the DPM/PM needs to speak.",
+        "Out-of-hours uplift: setting 'Out of business hours' to Yes adds a configurable percentage to the effort (default 15%, changeable in Settings) for the extra unsocial-hours coordination.",
+        "The new details are saved with each estimate, restored when you load a project, and shown in the record view and the Excel export - the country also places it on the map."
+      ]
+    },
     {
       "version": "2.6.0",
       "date": "2026-10-06",
