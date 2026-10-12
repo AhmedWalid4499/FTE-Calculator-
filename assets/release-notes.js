@@ -14,9 +14,20 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.10.0",
+  "version": "2.11.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.11.0",
+      "date": "2026-10-12",
+      "title": "A map by country and by cluster; simpler WAN/LAN",
+      "features": [
+        "The Project map now has two views you can switch between: By country HQ (a circle per project HQ country) and By cluster (a circle per sales cluster - SE, NWE, Benelux, GEA, Swiss, MEA, AMER, APAC - placed at its region).",
+        "HQ country and Sales cluster are no longer 'recorded only' - both now place your projects on the map. Set them on the WAN or LAN page and they show up straight away.",
+        "Circles are sized by number of projects or total FTE (your choice), and the filters for type, status and cluster work in both views.",
+        "Removed the 'Out of business hours' option from the WAN and LAN pages. New estimates no longer add an out-of-hours uplift; estimates saved earlier keep the figures they were saved with."
+      ]
+    },
     {
       "version": "2.10.0",
       "date": "2026-10-12",
