@@ -190,6 +190,10 @@
     'Dutch', 'Portuguese', 'Polish', 'Russian', 'Mandarin', 'Turkish'
   ];
 
+  /* Sales cluster the deal came from. Recorded on the estimate and shown on
+     the Project map. */
+  var SALES_CLUSTERS = ['SE', 'NWE', 'Benelux', 'GEA', 'Swiss', 'MEA', 'AMER', 'APAC'];
+
   /* Country list (code/name/lat/lon) for the Country field and the Map tab,
      loaded from assets/countries.js just before this file. */
   var COUNTRIES = (global.FTE_COUNTRIES || []).slice();
@@ -308,6 +312,7 @@
     outOfHours:   'Whether the work must happen outside normal business hours (nights/weekends). "Yes" adds an effort uplift (set in Settings, default 15%) on top of the base effort, for the extra coordination and unsocial-hours overhead. "No" and "Not known" add nothing.',
     oobhUplift:   'The percentage added to an estimate when "Out of business hours" is set to Yes. Applied to the base effort (plus any WAN migration uplift). Set to 0 to record out-of-hours work without changing the effort.',
     country:      'The country where the project HQ is. Recorded on the estimate and used to place it on the Project map. It does not change the calculated effort.',
+    salesCluster: 'The sales cluster the deal came from (SE, NWE, Benelux, GEA, Swiss, MEA, AMER, APAC). Recorded on the estimate and shown on the Project map; it does not change the calculated effort.',
     languages:    'Languages the assigned DPM or PM needs to speak for this project. Recorded for staffing and shown in exports and on the map; it does not change the effort. Select none for no specific requirement.',
     abacos:       'Records whether ABACOS applies. Recorded only - it does not change the calculated effort.',
     flan:         'Records whether FLAN is used. Recorded only - it does not change the calculated effort.',
@@ -399,6 +404,7 @@
     DPMS: DPMS,
     DPM_ROLES: DPM_ROLES,
     LANGUAGES: LANGUAGES,
+    SALES_CLUSTERS: SALES_CLUSTERS,
     COUNTRIES: COUNTRIES,
     countryName: countryName,
     country: country,

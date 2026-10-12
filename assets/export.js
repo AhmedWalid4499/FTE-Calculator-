@@ -675,6 +675,7 @@
          ['DPM acting as PM', i.pmRole, 'Reporting only']];
     recorded = recorded.concat([
       ['Project HQ country', (i.country ? D.countryName(i.country) : '') || '-', 'Shown on the Project map'],
+      ['Sales cluster', i.salesCluster || '-', 'Where the deal came from; shown on the Project map'],
       ['Required languages', (i.languages && i.languages.length ? i.languages.join(', ') : '') || '-', 'Language(s) the DPM/PM needs']
     ]);
     row = addFactTable(ws, row, 'Recorded only - does not affect the result', recorded, { theme: 'TableStyleLight10' });

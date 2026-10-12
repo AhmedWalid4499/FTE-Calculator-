@@ -35,8 +35,9 @@
 
       <div class="nav-sep"></div>
       <div class="nav-section">Data</div>
-      <button class="nav-item" data-page="records"><span class="nav-ic">🗄</span><span>FTE Records</span></button>
       <button class="nav-item" data-page="projects"><span class="nav-ic">⊞</span><span>Projects</span></button>
+      <button class="nav-item" data-page="insights"><span class="nav-ic">✨</span><span>Insights</span></button>
+      <button class="nav-item" data-page="records"><span class="nav-ic">🗄</span><span>FTE Records</span></button>
       <button class="nav-item" data-page="dpms"><span class="nav-ic">👤</span><span>DPM Directory</span></button>
 
       <div class="nav-sep"></div>
@@ -262,6 +263,10 @@
             <label for="w-country" data-help="country">Project HQ country <span class="tag tag-muted">recorded only</span></label>
             <select id="w-country"><option value="">— Select —</option></select>
           </div>
+          <div class="field">
+            <label for="w-cluster" data-help="salesCluster">Sales cluster <span class="tag tag-muted">recorded only</span></label>
+            <select id="w-cluster"><option value="">— Select —</option></select>
+          </div>
         </div>
         <div class="field mt-3 mb-0">
           <span class="field-label" data-help="languages">Required language(s) <span class="tag tag-muted">recorded only</span></span>
@@ -370,7 +375,6 @@
         <button class="btn btn-outline" id="w-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
         <button class="btn btn-outline" id="w-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="w-email" data-help="emailResult">✉ Email result</button>
-        <button class="btn btn-ghost" id="w-save-project">⊞ Save as project</button>
       </div>
     </section>
 
@@ -516,7 +520,10 @@
             <label for="l-country" data-help="country">Project HQ country <span class="tag tag-muted">recorded only</span></label>
             <select id="l-country"><option value="">— Select —</option></select>
           </div>
-          <div class="field"></div>
+          <div class="field">
+            <label for="l-cluster" data-help="salesCluster">Sales cluster <span class="tag tag-muted">recorded only</span></label>
+            <select id="l-cluster"><option value="">— Select —</option></select>
+          </div>
         </div>
         <div class="field mt-3 mb-0">
           <span class="field-label" data-help="languages">Required language(s) <span class="tag tag-muted">recorded only</span></span>
@@ -623,7 +630,6 @@
         <button class="btn btn-outline" id="l-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
         <button class="btn btn-outline" id="l-export">↓ Export to Excel</button>
         <button class="btn btn-outline" id="l-email" data-help="emailResult">✉ Email result</button>
-        <button class="btn btn-ghost" id="l-save-project">⊞ Save as project</button>
       </div>
     </section>
 
@@ -720,7 +726,8 @@
         <div class="grid g3 mb-0">
           <div class="field"><label for="map-type">Type</label><select id="map-type"><option value="">All types</option><option>WAN</option><option>LAN</option></select></div>
           <div class="field"><label for="map-status">Status</label><select id="map-status"><option value="">All statuses</option><option>Active</option><option>Inactive</option></select></div>
-          <div class="field"><label for="map-metric">Size circles by</label><select id="map-metric"><option value="count">Number of estimates</option><option value="fte">Total FTE</option></select></div>
+          <div class="field"><label for="map-cluster">Sales cluster</label><select id="map-cluster"><option value="">All clusters</option></select></div>
+          <div class="field"><label for="map-metric">Size circles by</label><select id="map-metric"><option value="count">Number of projects</option><option value="fte">Total FTE</option></select></div>
         </div>
       </div>
       <div class="card mb-0">
@@ -733,15 +740,9 @@
     <section class="page" id="page-records">
       <div class="page-head">
         <h2>FTE Records</h2>
-        <p>Every calculation is saved here automatically, together with the inputs that produced it. Nothing is overwritten, so you can see how an estimate changed over time. Estimates in the shared team folder are visible to everyone — the Insights tab summarises them all.</p>
+        <p>An automatic history of every calculation on this device — nothing is overwritten, so you can see how an estimate evolved. To keep one as a reusable project, press 💾 Save on the WAN or LAN page; the Projects tab, Insights and the Project map are built from those saved projects.</p>
       </div>
 
-      <div class="rec-tabs" id="rec-tabs">
-        <button type="button" class="rec-tab active" data-rec-tab="list">Calculations</button>
-        <button type="button" class="rec-tab" data-rec-tab="insights">✨ Insights</button>
-      </div>
-
-      <div id="rec-pane-list">
       <div class="card">
         <div class="card-head"><div class="card-title"><span class="dot"></span>Filter</div>
           <span id="records-count" class="tag tag-muted"></span>
@@ -761,8 +762,8 @@
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head"><div class="card-title"><span class="dot g"></span>Saved calculations</div>
+      <div class="card mb-0">
+        <div class="card-head"><div class="card-title"><span class="dot g"></span>Calculation history</div>
           <div class="btn-row">
             <button class="btn btn-outline btn-sm" id="rec-export-all">↓ Export all to Excel</button>
             <button class="btn btn-outline btn-sm" id="rec-refresh">↻ Refresh</button>
@@ -770,17 +771,22 @@
         </div>
         <div id="records-list"></div>
       </div>
-      </div><!-- /#rec-pane-list -->
+    </section>
 
-      <div id="rec-pane-insights" class="hidden">
+    <!-- ════════════════════════════════════════════════ INSIGHTS ══════ -->
+    <section class="page" id="page-insights">
+      <div class="page-head">
+        <h2>Insights</h2>
+        <p>A summary of the <b>saved projects</b> (from the Projects tab), not the raw history — totals, who estimated what, trends, and the split by product and tier.</p>
+      </div>
       <div class="card">
-        <div class="card-head"><div class="card-title"><span class="dot v"></span>Overview — every saved estimate</div>
+        <div class="card-head"><div class="card-title"><span class="dot v"></span>Overview — saved projects</div>
           <span id="rec-ins-scope" class="tag tag-muted"></span>
         </div>
         <div class="kpi-row" id="rec-kpis"></div>
         <div class="chart-grid-2">
           <div class="chart-card">
-            <div class="chart-title"><span class="dot"></span>Estimates by DPM</div>
+            <div class="chart-title"><span class="dot"></span>Projects by DPM</div>
             <div class="chart-box"><canvas id="ins-by-dpm"></canvas></div>
           </div>
           <div class="chart-card">
@@ -788,7 +794,7 @@
             <div class="chart-box"><canvas id="ins-fte-dpm"></canvas></div>
           </div>
           <div class="chart-card">
-            <div class="chart-title"><span class="dot a"></span>Estimates over time</div>
+            <div class="chart-title"><span class="dot a"></span>Projects over time</div>
             <div class="chart-box"><canvas id="ins-over-time"></canvas></div>
           </div>
           <div class="chart-card">
@@ -799,7 +805,7 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><div class="card-title"><span class="dot c"></span>By DPM — who estimated what</div></div>
+        <div class="card-head"><div class="card-title"><span class="dot c"></span>By DPM — who did what</div></div>
         <div id="rec-leaderboard"></div>
       </div>
 
@@ -824,14 +830,13 @@
           </div>
         </div>
       </div>
-      </div><!-- /#rec-pane-insights -->
     </section>
 
     <!-- ════════════════════════════════════════════════ PROJECTS ══════ -->
     <section class="page" id="page-projects">
       <div class="page-head">
         <h2>Projects</h2>
-        <p>Saved input configurations you can reload later. A project stores the settings you typed; an FTE record stores a calculated result.</p>
+        <p>Your saved estimates — press 💾 Save on the WAN or LAN page to keep one here, then select it to reload, export or delete it. Insights and the Project map are built from these. (Older input-only configurations you saved before appear under “Older saved configurations”.)</p>
       </div>
 
       <div class="card">

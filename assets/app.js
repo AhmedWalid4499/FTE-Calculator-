@@ -39,7 +39,7 @@
     dashboard: 'Dashboard', wan: 'WAN Estimator', lan: 'LAN Estimator',
     assistant: 'Assistant',
     capacity: 'Team capacity', map: 'Project map',
-    records: 'FTE Records', projects: 'Projects', dpms: 'DPM Directory',
+    records: 'FTE Records', insights: 'Insights', projects: 'Projects', dpms: 'DPM Directory',
     reference: 'Rates & Method', settings: 'Settings'
   };
 
@@ -89,7 +89,8 @@
 
     if (page === 'assistant') { aiDock(); return; }
     if (page === 'map') renderMap();
-    if (page === 'records') { renderRecords(); showRecordsTab(S.recTab || 'list'); }
+    if (page === 'records') renderRecords();
+    if (page === 'insights') renderInsights();
     if (page === 'capacity') renderCapacityPage(true);
     if (page === 'projects') renderProjects();
     if (page === 'dpms') renderDpmDirectory();
@@ -1157,6 +1158,7 @@
       savedAt: new Date().toISOString(),
       appVersion: D.APP_VERSION,
       type: 'WAN',
+      saved: false,
       projectCode: ensureCode('wan'),
       projectName: val('w-proj-name') || 'Untitled WAN project',
       status: segValue('w-status'),
@@ -1178,6 +1180,7 @@
         abacos: segValue('w-abacos'),
         pmRole: segValue('w-pm-role'),
         country: val('w-country'),
+        salesCluster: val('w-cluster'),
         languages: selectedLangs('wan'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
         migrationMdPerSite: S.settings.migrationMdPerSite,
@@ -1210,6 +1213,7 @@
       savedAt: new Date().toISOString(),
       appVersion: D.APP_VERSION,
       type: 'LAN',
+      saved: false,
       projectCode: ensureCode('lan'),
       projectName: val('l-proj-name') || 'Untitled LAN project',
       status: segValue('l-status'),
@@ -1230,6 +1234,7 @@
         flan: segValue('l-flan'),
         pmRole: segValue('l-pm-role'),
         country: val('l-country'),
+        salesCluster: val('l-cluster'),
         languages: selectedLangs('lan'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
         oobhUpliftPct: S.settings.oobhUpliftPct,
@@ -1261,44 +1266,49 @@
     var record = buildWanRecord();
     if (!record) return;
     showResult('wan', record);
-    afterCalculate();
+    autoLogCalculation(record);
   }
 
   function calculateLan() {
     var record = buildLanRecord();
     if (!record) return;
     showResult('lan', record);
-    afterCalculate();
+    autoLogCalculation(record);
   }
 
-  /* Calculating no longer saves anything - saving is a separate, explicit
-     choice (Save on this device, or Save to SharePoint). */
-  function afterCalculate() {
-    U.toast('Calculated — nothing saved yet. Use 💾 Save (this device) or ☁ Save to SharePoint.', 'ok');
+  /* Calculating logs the estimate to FTE Records (a history on this device,
+     repeats and all). It becomes a reusable Project only when you press Save. */
+  function autoLogCalculation(record) {
+    DB.saveRecord(record, { localOnly: true }).then(function () {
+      refreshAfterSave();
+      U.toast('Calculated and added to FTE Records. Press 💾 Save to keep it as a reloadable project.', 'ok');
+    });
   }
 
   function refreshAfterSave() {
     renderStorageStatus();
     return DB.listRecords().then(function (rows) {
       S.records = rows;
-      renderRecords(); renderInsights(); renderDashboard();
+      renderRecords(); renderProjects(); renderInsights(); renderMap(); renderDashboard();
     });
   }
 
-  /* The Save buttons act on the current calculated record, so saving to this
-     device and then to SharePoint updates the one record rather than making
-     two. The author is re-read from the "Calculated by" picker at save time. */
+  /* The Save buttons promote the current calculated estimate to a Project (a
+     reloadable entry in the Projects tab). Saving to this device and then to
+     SharePoint updates the one record, so Projects/Insights/Map never double
+     count. The author is re-read from the "Calculated by" picker at save time. */
   function saveEstimate(side, toSharePoint) {
     var rec = sideState(side).record;
     if (!rec) { U.toast('Press Calculate first, then Save.', 'warn'); return; }
-    /* Capture the latest author and notes from the form onto the record. */
     rec.createdBy = selectedAuthor(side);
     rec.notes = (val(prefix(side) + '-notes') || '').trim();
+    rec.saved = true;                               // mark it as a curated Project
+    rec.savedAt = new Date().toISOString();         // newest wins in the Projects/Insights de-dup
     if (toSharePoint) { publishEstimate(rec); return; }
     DB.saveRecord(rec, { localOnly: true }).then(function () {
       refreshAfterSave().then(function () {
-        U.toast('Saved on this device' + (rec.createdBy ? ' by ' + personName(rec.createdBy) : '') +
-                '. Find it in FTE Records.', 'ok');
+        U.toast('Saved as a project' + (rec.createdBy ? ' by ' + personName(rec.createdBy) : '') +
+                ' — find it in the Projects tab.', 'ok');
       });
     });
   }
@@ -1314,7 +1324,7 @@
         return refreshAfterSave().then(function () {
           if (res.written) {
             updateProjectWorkbook(rec.projectName, rec.createdBy, { silent: true });
-            U.toast('Saved to SharePoint — everyone with the team folder can see it in FTE Records.', 'ok');
+            U.toast('Saved to SharePoint — everyone with the team folder sees it in Projects, Insights and the map.', 'ok');
           } else {
             U.toast('Saved here; it will reach SharePoint once the folder is writable again.', 'warn');
           }
@@ -1950,6 +1960,18 @@
         n.setAttribute('aria-pressed', String(on));
       });
       renderStageSummary();
+    }
+
+    /* The profile fields added later (country, sales cluster, out-of-hours,
+       languages, author) are restored here too, for both sides. */
+    var p = prefix(side);
+    setVal(p + '-country', i.country || '');
+    setVal(p + '-cluster', i.salesCluster || '');
+    if (i.outOfHours) setSeg(p + '-oobh', i.outOfHours);
+    setLangChips(side, i.languages);
+    if (rec.createdBy && rec.createdBy.email) {
+      var authSel = el(p + '-author');
+      if (authSel) { setVal(p + '-author', rec.createdBy.email); authSel.setAttribute('data-userpick', '1'); }
     }
 
     var pill = el(prefix(side) + '-code-pill');
@@ -2861,6 +2883,7 @@
       : [['FLAN used', i.flan], ['DPM acting as PM', i.pmRole], ['Device count', i.devices]];
     infoRows = infoRows.concat([
       ['HQ country', i.country ? D.countryName(i.country) : ''],
+      ['Sales cluster', i.salesCluster],
       ['Out of business hours', i.outOfHours],
       ['Required languages', (i.languages || []).join(', ')]
     ]);
@@ -2941,7 +2964,7 @@
 
   function renderPortfolio() {
     var wanMd = {}, lanMd = {}, wanSites = {}, lanSites = {};
-    S.records.forEach(function (rec) {
+    savedProjects().forEach(function (rec) {
       var target = rec.type === 'WAN' ? wanMd : lanMd;
       var sites = rec.type === 'WAN' ? wanSites : lanSites;
       (rec.results.rows || []).forEach(function (row) {
@@ -2964,22 +2987,24 @@
     draw('port-lan-sites', lanSites, 'Sites', 3);
   }
 
-  /* ----------------------------------------------- records: Insights tab --- */
+  /* ------------------------------------------------- Insights (own tab) --- */
 
   /* True only when the element is actually laid out (not display:none and on
      the active page) - charts drawn into a hidden box get a zero size. */
   function paneVisible(id) { var e = el(id); return !!(e && e.offsetParent !== null); }
 
-  function showRecordsTab(name) {
-    name = (name === 'insights') ? 'insights' : 'list';
-    S.recTab = name;
-    qsa('.rec-tab').forEach(function (b) {
-      b.classList.toggle('active', b.getAttribute('data-rec-tab') === name);
+  /* The curated set: the latest saved estimate per project name + type. The
+     Projects tab, Insights and the Map all read this, NOT the raw FTE Records
+     history (which keeps every calculation, repeats and all). */
+  function savedProjects() {
+    var map = {};
+    (S.records || []).forEach(function (r) {
+      if (!r.saved) return;
+      var key = (r.projectName || '').toLowerCase() + '|' + r.type;
+      var prev = map[key];
+      if (!prev || (r.savedAt || '') > (prev.savedAt || '')) map[key] = r;
     });
-    var lp = el('rec-pane-list'), ip = el('rec-pane-insights');
-    if (lp) lp.classList.toggle('hidden', name !== 'list');
-    if (ip) ip.classList.toggle('hidden', name !== 'insights');
-    if (name === 'insights') renderInsights();
+    return Object.keys(map).map(function (k) { return map[k]; });
   }
 
   /* "YYYY-MM" -> "Mon YY". */
@@ -3008,8 +3033,8 @@
   }
 
   function renderInsights() {
-    if (!paneVisible('rec-pane-insights')) return;   // nothing to draw when the tab/page is off-screen
-    var recs = S.records || [];
+    if (!paneVisible('page-insights')) return;   // nothing to draw when the tab/page is off-screen
+    var recs = savedProjects();                  // curated set, not the raw history
     renderInsightsKpis(recs);
     renderInsightsCharts(recs);
     renderInsightsLeaderboard(recs);
@@ -3147,10 +3172,11 @@
   }
 
   function mapFilteredRecords() {
-    var type = val('map-type'), status = val('map-status');
-    return (S.records || []).filter(function (r) {
+    var type = val('map-type'), status = val('map-status'), cluster = val('map-cluster');
+    return savedProjects().filter(function (r) {
       if (type && r.type !== type) return false;
       if (status && r.status !== status) return false;
+      if (cluster && (r.inputs && r.inputs.salesCluster) !== cluster) return false;
       return true;
     });
   }
@@ -3191,17 +3217,18 @@
       var code = r.inputs && r.inputs.country;
       if (!code) return;
       var c = D.country(code); if (!c) return;
-      if (!by[code]) by[code] = { c: c, count: 0, fte: 0, wan: 0, lan: 0, names: [] };
+      if (!by[code]) by[code] = { c: c, count: 0, fte: 0, wan: 0, lan: 0, names: [], clusters: {} };
       var g = by[code];
       g.count += 1;
       g.fte += (r.results && r.results.fte) || 0;
       if (r.type === 'WAN') g.wan++; else if (r.type === 'LAN') g.lan++;
+      if (r.inputs && r.inputs.salesCluster) g.clusters[r.inputs.salesCluster] = (g.clusters[r.inputs.salesCluster] || 0) + 1;
       if (g.names.length < 12 && g.names.indexOf(r.projectName) < 0) g.names.push(r.projectName);
     });
     var codes = Object.keys(by);
     var withCountry = recs.filter(function (r) { return r.inputs && r.inputs.country && D.country(r.inputs.country); }).length;
     var cc = el('map-count');
-    if (cc) cc.textContent = withCountry + ' of ' + recs.length + ' have a country · ' + codes.length + ' countr' + (codes.length === 1 ? 'y' : 'ies');
+    if (cc) cc.textContent = withCountry + ' of ' + recs.length + ' project(s) have a country · ' + codes.length + ' countr' + (codes.length === 1 ? 'y' : 'ies');
     if (!codes.length) return;
     var maxVal = 1;
     codes.forEach(function (k) { var v = metric === 'fte' ? by[k].fte : by[k].count; if (v > maxVal) maxVal = v; });
@@ -3213,8 +3240,10 @@
       var m = L.circleMarker([g.c.lat, g.c.lon], {
         radius: radius, color: '#2563eb', weight: 1.5, fillColor: '#2563eb', fillOpacity: 0.45
       });
+      var clusterList = Object.keys(g.clusters);
       var html = '<div class="map-pop-title">' + esc(g.c.name) + '</div>' +
-        '<div class="map-pop-sub">' + g.count + ' estimate(s) · ' + g.wan + ' WAN / ' + g.lan + ' LAN · ' + fmt.fte(g.fte) + ' FTE total</div>' +
+        '<div class="map-pop-sub">' + g.count + ' project(s) · ' + g.wan + ' WAN / ' + g.lan + ' LAN · ' + fmt.fte(g.fte) + ' FTE total</div>' +
+        (clusterList.length ? '<div class="map-pop-sub">Sales cluster: ' + esc(clusterList.join(', ')) + '</div>' : '') +
         '<ul class="map-pop-list">' + g.names.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>';
       m.bindPopup(html);
       m.addTo(_mapLayer);
@@ -3737,34 +3766,75 @@
     });
   }
 
+  /* The Projects tab lists the curated saved estimates (latest per name+type),
+     each reloadable. Driven by savedProjects(), so FTE Records' repeats do not
+     show here. */
   function renderProjects() {
-    var host = el('proj-list');
-    if (!S.projects.length) {
+    var host = el('proj-list'); if (!host) return;
+    var list = savedProjects().sort(function (a, b) { return (b.savedAt || '').localeCompare(a.savedAt || ''); });
+    /* Projects saved under the earlier "Save as project" model (input-only
+       configurations, still in their own store) are kept and shown too, so
+       nothing a user saved before this change is lost. */
+    var legacy = (S.projects || []).slice().sort(function (a, b) { return (b.savedAt || '').localeCompare(a.savedAt || ''); });
+    if (!list.length && !legacy.length) {
       host.innerHTML = '<div class="empty"><div class="empty-ic">⊞</div>' +
-        '<p class="empty-title">No saved projects</p>' +
-        '<p class="empty-detail">Use "Save as project" on the WAN or LAN page to store the settings you have entered, ' +
-        'so you can pick the work up again later.</p></div>';
+        '<p class="empty-title">No saved projects yet</p>' +
+        '<p class="empty-detail">Calculate a WAN or LAN estimate and press 💾 Save to keep it here as a reloadable project. ' +
+        'Use ☁ Save to SharePoint to share it with the team.</p></div>';
       return;
     }
-    host.innerHTML = '<div class="record-list">' + S.projects.map(function (p) {
-      var w = p.wan || {}, l = p.lan || {};
-      var dpmCount = (w.dpms || []).length + (l.dpms || []).length;
-      var rowCount = (w.rows || []).length + (l.rows || []).length;
-      return '<div class="record-item' + (S.selectedProject === p.name ? ' selected' : '') +
-             '" data-project-name="' + esc(p.name) + '" role="button" tabindex="0">' +
-        '<div class="record-main">' +
-          '<div class="record-title-row"><span class="record-name">' + esc(p.name) + '</span>' +
-          (w.status ? '<span class="tag tag-muted">' + esc(w.status) + '</span>' : '') + '</div>' +
-          '<div class="record-meta">' +
-            (p.projectCode ? '<span class="record-code">' + esc(p.projectCode) + '</span>' : '') +
-            (p.savedBy ? '<span class="by">by <b>' + esc(isMe(p.savedBy) ? 'you' : personName(p.savedBy)) + '</b></span>' : '') +
-            '<span>' + esc(fmt.dateTime(p.savedAt)) + '</span>' +
-            '<span>' + rowCount + ' allocation row(s)</span>' +
-            (dpmCount ? '<span>' + dpmCount + ' DPM(s)</span>' : '') +
-            (p.migratedFromLocalStorage ? '<span class="tag tag-muted">imported from old version</span>' : '') +
+    var html = '';
+    if (list.length) {
+      html += '<div class="record-list">' + list.map(function (p) {
+        var r = p.results || {}, i = p.inputs || {}, sync = p.sync || {};
+        var whereTag = sync.localOnly
+          ? '<span class="tag tag-muted" title="On this device only. Save to SharePoint to share it with the team.">this device</span>'
+          : (sync.state === 'saved' && sync.shared
+              ? '<span class="tag tag-ok" title="Shared on the SharePoint team folder.">SharePoint</span>'
+              : '<span class="tag tag-muted" title="Saved.">saved</span>');
+        var where = [i.country ? D.countryName(i.country) : '', i.salesCluster || ''].filter(Boolean).join(' · ');
+        return '<div class="record-item' + (S.selectedProject === p.id ? ' selected' : '') +
+               '" data-project-id="' + esc(p.id) + '" role="button" tabindex="0">' +
+          '<div class="record-main">' +
+            '<div class="record-title-row"><span class="record-name">' + esc(p.projectName) + '</span>' +
+              '<span class="tag ' + (p.type === 'WAN' ? 'tag-info' : 'tag-ok') + '">' + esc(p.type) + '</span>' +
+              (p.status ? '<span class="tag tag-muted">' + esc(p.status) + '</span>' : '') +
+              whereTag +
+            '</div>' +
+            '<div class="record-meta">' +
+              (p.createdBy ? '<span class="by">by <b>' + esc(isMe(p.createdBy) ? 'you' : personName(p.createdBy)) + '</b></span>' : '') +
+              '<span>' + esc(fmt.dateTime(p.savedAt)) + '</span>' +
+              (where ? '<span>' + esc(where) + '</span>' : '') +
+            '</div>' +
           '</div>' +
-        '</div><span style="color:var(--text-4)">›</span></div>';
-    }).join('') + '</div>';
+          '<div class="record-figures">' +
+            '<div class="record-fig"><div class="record-fig-v">' + fmt.md1(r.totalMd) + '</div><div class="record-fig-l">MD</div></div>' +
+            '<div class="record-fig"><div class="record-fig-v">' + fmt.fte(r.fte) + '</div><div class="record-fig-l">FTE</div></div>' +
+          '</div></div>';
+      }).join('') + '</div>';
+    }
+    if (legacy.length) {
+      html += '<div class="divider"><span>Older saved configurations</span></div>' +
+        '<div class="record-list">' + legacy.map(function (p) {
+          var w = p.wan || {}, l = p.lan || {};
+          var rowCount = (w.rows || []).length + (l.rows || []).length;
+          var key = 'cfg:' + p.name;
+          return '<div class="record-item' + (S.selectedProject === key ? ' selected' : '') +
+                 '" data-project-id="' + esc(key) + '" role="button" tabindex="0">' +
+            '<div class="record-main">' +
+              '<div class="record-title-row"><span class="record-name">' + esc(p.name) + '</span>' +
+                '<span class="tag tag-muted" title="Saved before the new model: inputs only, no results.">configuration</span>' +
+                (p.migratedFromLocalStorage ? '<span class="tag tag-muted">imported from old version</span>' : '') +
+              '</div>' +
+              '<div class="record-meta">' +
+                (p.savedBy ? '<span class="by">by <b>' + esc(isMe(p.savedBy) ? 'you' : personName(p.savedBy)) + '</b></span>' : '') +
+                '<span>' + esc(fmt.dateTime(p.savedAt)) + '</span>' +
+                '<span>' + rowCount + ' allocation row(s)</span>' +
+              '</div>' +
+            '</div><span style="color:var(--text-4)">›</span></div>';
+        }).join('') + '</div>';
+    }
+    host.innerHTML = html;
   }
 
   function importProjectFile(input) {
@@ -3947,7 +4017,7 @@
     var opts = [], seen = {};
     if (me) {
       var mk = String(me.email || '').toLowerCase();
-      opts.push({ value: me.email || '', label: (me.name || me.email || 'You') + ' (you)' });
+      opts.push({ value: me.email || '', label: (me.name || me.email || 'You') });
       if (mk) seen[mk] = true;
     } else {
       /* No identity yet: a neutral blank so createdBy stays "not recorded"
@@ -4322,7 +4392,7 @@
       host.innerHTML = rows.join('') +
         '<div class="summary-list mt-3">' +
         '<div><span class="k">FTE records stored:</span> <b>' + total + '</b></div>' +
-        '<div><span class="k">Saved projects:</span> <b>' + S.projects.length + '</b></div>' +
+        '<div><span class="k">Saved projects:</span> <b>' + (savedProjects().length + (S.projects ? S.projects.length : 0)) + '</b></div>' +
         '<div><span class="k">DPMs in directory:</span> <b>' + D.DPMS.length + '</b></div>' +
         '<div><span class="k">Not yet written to disk:</span> <b>' + pending + '</b></div>' +
         '<div><span class="k">Storage mode:</span> <b>' + esc(st.mode) + '</b></div>' +
@@ -5120,6 +5190,10 @@
       var sel = el(id); if (!sel) return;
       D.COUNTRIES.forEach(function (c) { sel.add(new Option(c.name, c.code)); });
     });
+    ['w-cluster', 'l-cluster', 'map-cluster'].forEach(function (id) {
+      var sel = el(id); if (!sel) return;
+      D.SALES_CLUSTERS.forEach(function (c) { sel.add(new Option(c, c)); });
+    });
     renderLangChips('wan'); renderLangChips('lan');
     renderAuthorPicker('wan'); renderAuthorPicker('lan');
     updateOobhHelp();
@@ -5231,8 +5305,8 @@
       var recItem = e.target.closest('[data-record-id]');
       if (recItem) { viewRecord(recItem.dataset.recordId); return; }
 
-      var projItem = e.target.closest('[data-project-name]');
-      if (projItem) { S.selectedProject = projItem.dataset.projectName; renderProjects(); return; }
+      var projItem = e.target.closest('[data-project-id]');
+      if (projItem) { S.selectedProject = projItem.getAttribute('data-project-id'); renderProjects(); return; }
 
       var refStage = e.target.closest('[data-ref-stage]');
       if (refStage) { renderStageReference(refStage.dataset.refStage); return; }
@@ -5289,7 +5363,6 @@
       if (!S.wan.record) { U.toast('Run a WAN calculation first.', 'warn'); return; }
       syncActiveNotes('wan').then(function () { EX.exportRecord(S.wan.record); });
     });
-    el('w-save-project').addEventListener('click', saveCurrentAsProject);
     el('w-add-compare').addEventListener('click', function () { ensureIdentity().then(function () { addToComparison('wan'); }); });
     el('w-email').addEventListener('click', function () { syncActiveNotes('wan').then(function () { emailResult('wan'); }); });
     el('w-assign-dpms').addEventListener('click', function () { openDpmPicker('wan'); });
@@ -5318,7 +5391,6 @@
       if (!S.lan.record) { U.toast('Run a LAN calculation first.', 'warn'); return; }
       syncActiveNotes('lan').then(function () { EX.exportRecord(S.lan.record); });
     });
-    el('l-save-project').addEventListener('click', saveCurrentAsProject);
     el('l-add-compare').addEventListener('click', function () { ensureIdentity().then(function () { addToComparison('lan'); }); });
     el('l-email').addEventListener('click', function () { syncActiveNotes('lan').then(function () { emailResult('lan'); }); });
     el('l-assign-dpms').addEventListener('click', function () { openDpmPicker('lan'); });
@@ -5358,11 +5430,6 @@
     }, true);
 
     /* Records */
-    var recTabs = el('rec-tabs');
-    if (recTabs) recTabs.addEventListener('click', function (e) {
-      var b = e.target.closest('.rec-tab'); if (!b) return;
-      showRecordsTab(b.getAttribute('data-rec-tab'));
-    });
     ['rec-search', 'rec-owner', 'rec-type', 'rec-status', 'rec-sort'].forEach(function (id) {
       el(id).addEventListener('input', renderRecords);
     });
@@ -5380,36 +5447,78 @@
     el('rec-export-all').addEventListener('click', function () { EX.exportAllRecords(filteredRecords()); });
 
     /* Project map */
-    ['map-type', 'map-status', 'map-metric'].forEach(function (id) {
+    ['map-type', 'map-status', 'map-cluster', 'map-metric'].forEach(function (id) {
       var e2 = el(id); if (e2) e2.addEventListener('change', function () { renderMap(); });
     });
 
     /* Projects */
     el('proj-import-btn').addEventListener('click', function () { el('proj-import-file').click(); });
     el('proj-import-file').addEventListener('change', function () { importProjectFile(this); });
+    /* A selected id of "cfg:<name>" is an older input-only configuration in the
+       projects store; anything else is a saved estimate record. */
     el('proj-load').addEventListener('click', function () {
-      if (!S.selectedProject) { U.toast('Select a project from the list first.', 'warn'); return; }
-      var cfg = S.projects.find(function (p) { return p.name === S.selectedProject; });
-      if (!cfg) return;
-      applyProjectConfig(cfg);
-      U.toast('Loaded "' + cfg.name + '" into the estimators.', 'ok');
-      gotoPage('wan');
+      var sel = S.selectedProject;
+      if (!sel) { U.toast('Select a project from the list first.', 'warn'); return; }
+      if (sel.indexOf('cfg:') === 0) {
+        var cfg = (S.projects || []).filter(function (p) { return p.name === sel.slice(4); })[0];
+        if (!cfg) return;
+        applyProjectConfig(cfg);
+        gotoPage((cfg.wan && cfg.wan.projName) ? 'wan' : 'lan');
+        U.toast('Loaded configuration "' + cfg.name + '" into the estimators.', 'ok');
+        return;
+      }
+      var rec = S.records.find(function (r) { return r.id === sel; });
+      if (!rec) return;
+      var side = rec.type === 'LAN' ? 'lan' : 'wan';
+      applyRecordToForm(side, rec); gotoPage(side);
+      U.toast('Loaded "' + rec.projectName + '" (' + rec.type + ') into the estimator.', 'ok');
     });
     el('proj-export').addEventListener('click', function () {
-      if (!S.selectedProject) { U.toast('Select a project from the list first.', 'warn'); return; }
-      var cfg = S.projects.find(function (p) { return p.name === S.selectedProject; });
-      if (cfg) EX.exportProject(cfg);
+      var sel = S.selectedProject;
+      if (!sel) { U.toast('Select a project from the list first.', 'warn'); return; }
+      if (sel.indexOf('cfg:') === 0) {
+        var cfg = (S.projects || []).filter(function (p) { return p.name === sel.slice(4); })[0];
+        if (cfg) EX.exportProject(cfg);
+        return;
+      }
+      var rec = S.records.find(function (r) { return r.id === sel; });
+      if (rec) EX.exportRecord(rec);
     });
     el('proj-delete').addEventListener('click', function () {
-      if (!S.selectedProject) { U.toast('Select a project from the list first.', 'warn'); return; }
-      var name = S.selectedProject;
-      U.confirm('Delete this project?', 'This permanently removes the saved configuration "' + name + '".',
+      var sel = S.selectedProject;
+      if (!sel) { U.toast('Select a project from the list first.', 'warn'); return; }
+      if (sel.indexOf('cfg:') === 0) {
+        var name = sel.slice(4);
+        U.confirm('Delete this configuration?', 'This permanently removes the saved configuration "' + name + '".',
+          { confirmLabel: 'Delete', danger: true }).then(function (yes) {
+          if (!yes) return;
+          return DB.deleteProject(name).then(function () { return DB.listProjects(); }).then(function (listp) {
+            S.projects = listp; S.selectedProject = null; renderProjects();
+            U.toast('Configuration deleted.', 'ok');
+          });
+        });
+        return;
+      }
+      var rec = S.records.find(function (r) { return r.id === sel; });
+      if (!rec) return;
+      var nameKey = (rec.projectName || '').toLowerCase(), type = rec.type;
+      /* Delete every saved version of this project (same name + type), so an
+         older saved copy does not resurface after the delete. */
+      var ids = S.records.filter(function (r) {
+        return r.saved && r.type === type && (r.projectName || '').toLowerCase() === nameKey;
+      }).map(function (r) { return r.id; });
+      U.confirm('Delete this project?',
+        'This permanently removes "' + rec.projectName + '" (' + rec.type + ')' +
+        (ids.length > 1 ? ', including ' + (ids.length - 1) + ' earlier saved version(s),' : '') +
+        ' from Projects and FTE Records. Calculations you never saved are kept in the history.',
         { confirmLabel: 'Delete', danger: true }).then(function (yes) {
         if (!yes) return;
-        return DB.deleteProject(name).then(function () { return DB.listProjects(); }).then(function (list) {
-          S.projects = list; S.selectedProject = null; renderProjects();
-          U.toast('Project deleted.', 'ok');
-        });
+        return ids.reduce(function (chain, id) { return chain.then(function () { return DB.deleteRecord(id); }); }, Promise.resolve())
+          .then(function () { return DB.listRecords(); }).then(function (rows) {
+            S.records = rows; S.selectedProject = null;
+            renderProjects(); renderRecords(); renderInsights(); renderMap(); renderDashboard();
+            U.toast('Project deleted.', 'ok');
+          });
       });
     });
 
