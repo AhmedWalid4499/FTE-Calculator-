@@ -14,9 +14,22 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.8.0",
+  "version": "2.9.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.9.0",
+      "date": "2026-10-12",
+      "title": "Projects, Insights & the map, from saved estimates",
+      "features": [
+        "💾 Save now creates a reloadable project: it appears in the Projects tab (shared with the team when you Save to SharePoint), where one click loads it back - inputs, result, author and all - to tweak or recalculate.",
+        "FTE Records is now a plain history: every Calculate is logged automatically, so you keep the full trail even when the same project is estimated more than once.",
+        "Insights has its own tab, and it counts each project once (from your saved projects, not the raw history) - so repeated calculations no longer inflate the totals.",
+        "The Project map now reads the same saved projects, so the map and the Insights tab always agree.",
+        "New 'Sales cluster' field next to the HQ country (SE, NWE, Benelux, GEA, Swiss, MEA, AMER, APAC) records where a deal came from; filter the map by it and see it on each project.",
+        "Older input-only projects from before this release still appear, under 'Older saved configurations', and load as before."
+      ]
+    },
     {
       "version": "2.8.0",
       "date": "2026-10-12",
