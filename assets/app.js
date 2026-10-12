@@ -2964,7 +2964,7 @@
 
   function renderPortfolio() {
     var wanMd = {}, lanMd = {}, wanSites = {}, lanSites = {};
-    savedProjects().forEach(function (rec) {
+    analyticsProjects().forEach(function (rec) {
       var target = rec.type === 'WAN' ? wanMd : lanMd;
       var sites = rec.type === 'WAN' ? wanSites : lanSites;
       (rec.results.rows || []).forEach(function (row) {
@@ -2993,6 +2993,14 @@
      the active page) - charts drawn into a hidden box get a zero size. */
   function paneVisible(id) { var e = el(id); return !!(e && e.offsetParent !== null); }
 
+  /* The identity used to dedup estimates: project name (trimmed, case-folded)
+     + type. The name is trimmed because a saved record keeps it exactly as
+     typed while a legacy record trims it - without this a stray leading or
+     trailing space would split one project into two across the two stores. */
+  function projectKey(r) {
+    return String((r && r.projectName) || '').trim().toLowerCase() + '|' + (r && r.type);
+  }
+
   /* The curated set: the latest saved estimate per project name + type. The
      Projects tab, Insights and the Map all read this, NOT the raw FTE Records
      history (which keeps every calculation, repeats and all). */
@@ -3000,11 +3008,113 @@
     var map = {};
     (S.records || []).forEach(function (r) {
       if (!r.saved) return;
-      var key = (r.projectName || '').toLowerCase() + '|' + r.type;
+      var key = projectKey(r);
       var prev = map[key];
       if (!prev || (r.savedAt || '') > (prev.savedAt || '')) map[key] = r;
     });
     return Object.keys(map).map(function (k) { return map[k]; });
+  }
+
+  /* ---- Legacy configurations as analytics records --------------------- *
+     Projects saved under the earlier "Save as project" model are input-only
+     configurations: they carry the inputs but no computed result. So that
+     they still power Insights and the Map automatically - the same place a
+     saved estimate appears - each side that has real content is recomputed
+     here on the fly (the engine is pure) and wrapped in the record shape the
+     analytics read. Nothing is written back: this is derived fresh on every
+     render, so deleting the configuration removes it everywhere and no
+     duplicate records are ever created on disk. */
+
+  function personByEmail(email) {
+    if (!email) return null;
+    var key = String(email).toLowerCase();
+    var me = meStamp();
+    if (me && String(me.email || '').toLowerCase() === key) return me;
+    var dpm = (D.DPMS || []).filter(function (d) { return String(d.email || '').toLowerCase() === key; })[0];
+    return dpm ? { name: dpm.name, email: dpm.email } : { name: '', email: email };
+  }
+
+  /* One side (WAN or LAN) of a legacy configuration, recomputed, or null when
+     that side holds nothing to estimate or does not validate. */
+  function legacySideRecord(cfg, type) {
+    var side = type === 'WAN' ? cfg.wan : cfg.lan;
+    if (!side) return null;
+    var rows = side.rows || [];
+    var sites = +side.sites || 0;
+    /* Needs a real allocation to count. Without rows the WAN engine refuses
+       (so WAN already drops out) while the LAN engine would silently price
+       every site at the smallest fallback tier - a figure the user never
+       entered. Requiring an allocation keeps both sides honest and symmetric,
+       so a half-filled configuration is not counted as an estimate. */
+    if (!rows.length) return null;
+
+    var input, result;
+    if (type === 'WAN') {
+      input = {
+        months: +side.months || 0, totalSites: sites, mode: side.mode,
+        migration: side.migration, outOfHours: side.outOfHours,
+        distribution: side.distribution,
+        allocation: rows.map(function (r) { return Object.assign({}, r); })
+      };
+      result = C.calculateWan(input, S.settings);
+    } else {
+      input = {
+        months: +side.months || 0, totalSites: sites, devices: +side.devices || 0,
+        mode: side.mode, stages: side.stages || [], fallbackOverride: side.fallbackOverride || null,
+        outOfHours: side.outOfHours, distribution: side.distribution,
+        allocation: rows.map(function (r) { return Object.assign({}, r); })
+      };
+      result = C.calculateLan(input, S.settings);
+    }
+    if (!result || !result.ok) return null;
+
+    var author = side.author ? personByEmail(side.author) : (cfg.savedBy || null);
+    return {
+      id: 'cfg:' + cfg.name + '|' + type,
+      legacy: true,
+      savedAt: cfg.savedAt || '',
+      appVersion: cfg.appVersion,
+      type: type,
+      saved: true,
+      projectCode: cfg.projectCode || null,
+      projectName: (side.projName || '').trim() || cfg.name,
+      status: side.status || '',
+      createdBy: author,
+      notes: side.notes || '',
+      inputs: {
+        months: input.months, totalSites: input.totalSites,
+        mode: input.mode, outOfHours: input.outOfHours,
+        country: side.country || '', salesCluster: side.salesCluster || '',
+        languages: side.languages || [], distribution: input.distribution,
+        allocation: input.allocation
+      },
+      dpms: (side.dpms || []).map(function (d) { return Object.assign({}, d); }),
+      results: Object.assign({}, result)
+    };
+  }
+
+  function legacyAsRecords() {
+    var out = [];
+    (S.projects || []).forEach(function (cfg) {
+      var w = legacySideRecord(cfg, 'WAN'); if (w) out.push(w);
+      var l = legacySideRecord(cfg, 'LAN'); if (l) out.push(l);
+    });
+    return out;
+  }
+
+  /* The set Insights and the Map read: the saved estimates, plus legacy
+     configurations recomputed on the fly. A real saved estimate for a given
+     project name + type wins over a legacy one of the same name. */
+  function analyticsProjects() {
+    var saved = savedProjects();
+    var seen = {};
+    saved.forEach(function (r) { seen[projectKey(r)] = true; });
+    var merged = saved.slice();
+    legacyAsRecords().forEach(function (r) {
+      var key = projectKey(r);
+      if (!seen[key]) { seen[key] = true; merged.push(r); }
+    });
+    return merged;
   }
 
   /* "YYYY-MM" -> "Mon YY". */
@@ -3034,7 +3144,7 @@
 
   function renderInsights() {
     if (!paneVisible('page-insights')) return;   // nothing to draw when the tab/page is off-screen
-    var recs = savedProjects();                  // curated set, not the raw history
+    var recs = analyticsProjects();              // saved estimates + legacy configs, not the raw history
     renderInsightsKpis(recs);
     renderInsightsCharts(recs);
     renderInsightsLeaderboard(recs);
@@ -3173,7 +3283,7 @@
 
   function mapFilteredRecords() {
     var type = val('map-type'), status = val('map-status'), cluster = val('map-cluster');
-    return savedProjects().filter(function (r) {
+    return analyticsProjects().filter(function (r) {
       if (type && r.type !== type) return false;
       if (status && r.status !== status) return false;
       if (cluster && (r.inputs && r.inputs.salesCluster) !== cluster) return false;
@@ -3635,8 +3745,8 @@
         startMonth: val('w-start-month'),
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
-        outOfHours: segValue('w-oobh'), country: val('w-country'), languages: selectedLangs('wan'),
-        author: val('w-author'),
+        outOfHours: segValue('w-oobh'), country: val('w-country'), salesCluster: val('w-cluster'),
+        languages: selectedLangs('wan'), author: val('w-author'),
         distribution: segValue('w-dist'), notes: (val('w-notes') || '').trim(),
         rows: S.wan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); })
@@ -3648,8 +3758,8 @@
         sites: numVal('l-sites') || null, devices: numVal('l-devices'),
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
-        outOfHours: segValue('l-oobh'), country: val('l-country'), languages: selectedLangs('lan'),
-        author: val('l-author'),
+        outOfHours: segValue('l-oobh'), country: val('l-country'), salesCluster: val('l-cluster'),
+        languages: selectedLangs('lan'), author: val('l-author'),
         distribution: segValue('l-dist'), notes: (val('l-notes') || '').trim(),
         rows: S.lan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); })
@@ -3684,6 +3794,7 @@
     if (w.mode) setSeg('w-mode', w.mode);
     if (w.outOfHours) setSeg('w-oobh', w.outOfHours);
     setVal('w-country', w.country || '');
+    setVal('w-cluster', w.salesCluster || '');
     if (w.author) { setVal('w-author', w.author); var wauth = el('w-author'); if (wauth) wauth.setAttribute('data-userpick', '1'); }
     setLangChips('wan', w.languages);
     setSeg('w-dist', w.distribution === 'bell' ? 'bell' : 'flat');
@@ -3703,6 +3814,7 @@
     setVal('l-fb-ovrd', l.fallbackOverride || '');
     if (l.outOfHours) setSeg('l-oobh', l.outOfHours);
     setVal('l-country', l.country || '');
+    setVal('l-cluster', l.salesCluster || '');
     if (l.author) { setVal('l-author', l.author); var lauth = el('l-author'); if (lauth) lauth.setAttribute('data-userpick', '1'); }
     setLangChips('lan', l.languages);
     setSeg('l-dist', l.distribution === 'bell' ? 'bell' : 'flat');
@@ -3819,11 +3931,17 @@
           var w = p.wan || {}, l = p.lan || {};
           var rowCount = (w.rows || []).length + (l.rows || []).length;
           var key = 'cfg:' + p.name;
+          /* Computed on the fly - the same figures that now feed Insights and the Map. */
+          var wr = legacySideRecord(p, 'WAN'), lr = legacySideRecord(p, 'LAN');
+          var md = ((wr && wr.results.totalMd) || 0) + ((lr && lr.results.totalMd) || 0);
+          var fte = ((wr && wr.results.fte) || 0) + ((lr && lr.results.fte) || 0);
+          var sides = [wr ? 'WAN' : '', lr ? 'LAN' : ''].filter(Boolean).join(' + ');
           return '<div class="record-item' + (S.selectedProject === key ? ' selected' : '') +
                  '" data-project-id="' + esc(key) + '" role="button" tabindex="0">' +
             '<div class="record-main">' +
               '<div class="record-title-row"><span class="record-name">' + esc(p.name) + '</span>' +
-                '<span class="tag tag-muted" title="Saved before the new model: inputs only, no results.">configuration</span>' +
+                (sides ? '<span class="tag tag-muted">' + esc(sides) + '</span>' : '') +
+                '<span class="tag tag-muted" title="Saved under the earlier model. Its result is computed automatically and feeds Insights and the Map; load it to review or re-save it.">configuration</span>' +
                 (p.migratedFromLocalStorage ? '<span class="tag tag-muted">imported from old version</span>' : '') +
               '</div>' +
               '<div class="record-meta">' +
@@ -3831,7 +3949,14 @@
                 '<span>' + esc(fmt.dateTime(p.savedAt)) + '</span>' +
                 '<span>' + rowCount + ' allocation row(s)</span>' +
               '</div>' +
-            '</div><span style="color:var(--text-4)">›</span></div>';
+            '</div>' +
+            ((wr || lr)
+              ? '<div class="record-figures">' +
+                  '<div class="record-fig"><div class="record-fig-v">' + fmt.md1(md) + '</div><div class="record-fig-l">MD</div></div>' +
+                  '<div class="record-fig"><div class="record-fig-v">' + fmt.fte(fte) + '</div><div class="record-fig-l">FTE</div></div>' +
+                '</div>'
+              : '<span style="color:var(--text-4)">›</span>') +
+            '</div>';
         }).join('') + '</div>';
     }
     host.innerHTML = html;
