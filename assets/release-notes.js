@@ -14,9 +14,21 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.9.0",
+  "version": "2.10.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.10.0",
+      "date": "2026-10-12",
+      "title": "Insights & the map now include every saved project",
+      "features": [
+        "Insights and the Project map now draw on your saved projects automatically - including ones saved before the last release. Nothing to re-save: each project's result is recomputed on the fly, so the moment a project is in the Projects tab it counts.",
+        "Each project is counted once. A project that was saved more than once (or kept as both a saved estimate and an older configuration) no longer double-counts in the totals or on the map.",
+        "The Projects tab now shows the man-days and FTE for older configurations too, and whether each has a WAN side, a LAN side, or both - the same figures that feed Insights.",
+        "Saving and reloading a project now keeps its Sales cluster (it was previously dropped on reload).",
+        "A half-finished configuration - a site count with no tier allocation - is no longer counted as an estimate, so the totals reflect only real estimates."
+      ]
+    },
     {
       "version": "2.9.0",
       "date": "2026-10-12",
