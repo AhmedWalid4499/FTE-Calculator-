@@ -771,7 +771,7 @@
       });
   }
 
-  function saveRecord(record) {
+  function saveRecord(record, opts) {
     record.sync = record.sync || {};
     /* Keep the "came from a colleague" marker through re-saves, e.g. when a
        planned start month is edited on the Team capacity page. */
@@ -779,10 +779,19 @@
     /* Where this record already lives on disk, if anywhere. A write that
        fails is retried later only into that same place (see flushPending). */
     var home = record.sync.loc || currentLoc();
+    /* "Save on this device": keep it only in this browser. It is marked
+       'saved' with no disk home, so flushPending never pushes it to a shared
+       folder - sharing it is a deliberate, separate action (Save to SharePoint). */
+    if (opts && opts.localOnly) {
+      record.sync = { state: 'saved', file: null, loc: null, localOnly: true, shared: false, at: new Date().toISOString(), pulled: pulled };
+      return putLocal(STORE_RECORDS, record).then(function () {
+        return { record: record, written: true, file: null, localOnly: true };
+      });
+    }
     return putLocal(STORE_RECORDS, record)
       .then(function () { return writeRecordToDisk(record); })
       .then(function (file) {
-        record.sync = { state: 'saved', file: file, loc: currentLoc(), at: new Date().toISOString(), pulled: pulled };
+        record.sync = { state: 'saved', file: file, loc: currentLoc(), shared: isSharedLocation(), at: new Date().toISOString(), pulled: pulled };
         return putLocal(STORE_RECORDS, record).then(function () {
           return { record: record, written: true, file: file };
         });
@@ -813,10 +822,14 @@
      shared folder is someone else's, so it stays out of "copy my estimates". */
   function updateRecord(record) {
     return getLocal(STORE_RECORDS, record.id).then(function (local) {
+      /* A record saved on this device only stays that way when its notes or
+         planned start are edited (e.g. on the Team capacity page) - editing
+         must never quietly publish it to the shared folder. */
+      var localOnly = !!(local && local.sync && local.sync.localOnly);
       var rec = Object.assign({}, record);
       rec.sync = { pulled: local ? !!(local.sync && local.sync.pulled) : isSharedLocation(),
                    loc: local && local.sync ? local.sync.loc : currentLoc() };
-      return saveRecord(rec);
+      return saveRecord(rec, localOnly ? { localOnly: true } : undefined);
     });
   }
 
@@ -948,7 +961,7 @@
         return chain.then(function () {
           return writeRecordToDisk(rec)
             .then(function (file) {
-              rec.sync = { state: 'saved', file: file, loc: currentLoc(), at: new Date().toISOString(),
+              rec.sync = { state: 'saved', file: file, loc: currentLoc(), shared: isSharedLocation(), at: new Date().toISOString(),
                            pulled: !!(rec.sync && rec.sync.pulled) };
               return putLocal(STORE_RECORDS, rec).then(function () { written.push(rec); });
             })
@@ -1035,7 +1048,7 @@
         return c.then(function (n) {
           var mine = byId[r.id];
           var rec = withoutSync(r);
-          rec.sync = { state: 'saved', file: null, loc: loc, at: new Date().toISOString(),
+          rec.sync = { state: 'saved', file: null, loc: loc, shared: shared, at: new Date().toISOString(),
                        pulled: mine ? !!(mine.sync && mine.sync.pulled) : shared };
           return putLocal(STORE_RECORDS, rec).then(function () { return n + 1; });
         });
@@ -1099,6 +1112,9 @@
       var onDisk = {};
       res[0].items.forEach(function (r) { onDisk[r.id] = true; });
       var mine = res[1].filter(function (r) {
+        /* Saved on this device only: sharing it is a deliberate, separate
+           action (Save to SharePoint), never a bulk copy. */
+        if (r.sync && r.sync.localOnly) return false;
         if (onDisk[r.id] || (r.sync && r.sync.pulled)) return false;
         /* Stamped as somebody else's work: never ours to publish. */
         var by = r.createdBy && r.createdBy.email ? String(r.createdBy.email).toLowerCase() : '';
@@ -1109,7 +1125,7 @@
       return mine.reduce(function (chain, rec) {
         return chain.then(function () {
           return writeRecordToDisk(rec).then(function (file) {
-            rec.sync = { state: 'saved', file: file, loc: loc, at: new Date().toISOString(), pulled: false };
+            rec.sync = { state: 'saved', file: file, loc: loc, shared: isSharedLocation(), at: new Date().toISOString(), pulled: false };
             return putLocal(STORE_RECORDS, rec).then(function () { written.push(rec); });
           }).catch(function () {});
         });

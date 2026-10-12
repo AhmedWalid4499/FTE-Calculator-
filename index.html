@@ -153,6 +153,10 @@
             <input type="text" id="w-proj-name" placeholder="e.g. Q3 WAN EMEA Rollout" autocomplete="off">
           </div>
           <div class="field">
+            <label for="w-author" data-help="author">Calculated by</label>
+            <select id="w-author"></select>
+          </div>
+          <div class="field">
             <span class="field-label" data-help="status">Project status <span class="tag tag-muted">team plan only</span></span>
             <div class="segmented" id="w-status" role="group" aria-label="Project status">
               <button type="button" data-val="Active" class="active">Active</button>
@@ -359,6 +363,8 @@
       <div class="divider"><span>Actions</span></div>
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="w-calculate">Calculate WAN FTE</button>
+        <button class="btn btn-primary" id="w-save" data-help="saveDevice">💾 Save</button>
+        <button class="btn btn-outline" id="w-save-sp" data-help="saveSharepoint">☁ Save to SharePoint</button>
         <button class="btn btn-outline ai-only hidden" id="w-ai-autofill">✨ Auto-fill from a file</button>
         <button class="btn btn-outline ai-only hidden" id="w-ai-opinion">💬 AI opinion</button>
         <button class="btn btn-outline" id="w-add-compare" data-help="compareScenarios">➕ Add to comparison</button>
@@ -383,6 +389,10 @@
           <div class="field">
             <label for="l-proj-name" data-help="projectName">Project name</label>
             <input type="text" id="l-proj-name" placeholder="e.g. Q3 LAN Cairo Rollout" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="l-author" data-help="author">Calculated by</label>
+            <select id="l-author"></select>
           </div>
           <div class="field">
             <span class="field-label" data-help="status">Project status <span class="tag tag-muted">team plan only</span></span>
@@ -606,6 +616,8 @@
       <div class="divider"><span>Actions</span></div>
       <div class="btn-row">
         <button class="btn btn-primary btn-lg" id="l-calculate">Calculate LAN FTE</button>
+        <button class="btn btn-primary" id="l-save" data-help="saveDevice">💾 Save</button>
+        <button class="btn btn-outline" id="l-save-sp" data-help="saveSharepoint">☁ Save to SharePoint</button>
         <button class="btn btn-outline ai-only hidden" id="l-ai-autofill">✨ Auto-fill from a file</button>
         <button class="btn btn-outline ai-only hidden" id="l-ai-opinion">💬 AI opinion</button>
         <button class="btn btn-outline" id="l-add-compare" data-help="compareScenarios">➕ Add to comparison</button>

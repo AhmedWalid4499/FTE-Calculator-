@@ -734,6 +734,7 @@
   }
 
   function renderDpmDirectory() {
+    renderAuthorPicker('wan'); renderAuthorPicker('lan');   // keep the "Calculated by" list in step with the directory
     var q = (val('dpm-search') || '').toLowerCase();
     var list = D.DPMS.filter(function (d) {
       return d.name.toLowerCase().indexOf(q) >= 0 || d.email.toLowerCase().indexOf(q) >= 0;
@@ -1159,7 +1160,7 @@
       projectCode: ensureCode('wan'),
       projectName: val('w-proj-name') || 'Untitled WAN project',
       status: segValue('w-status'),
-      createdBy: meStamp(),
+      createdBy: selectedAuthor('wan'),
       notes: (val('w-notes') || '').trim(),
       /* The complete input set is frozen onto the record here. Exports and the
          records page read only from this, never from the live form. */
@@ -1212,7 +1213,7 @@
       projectCode: ensureCode('lan'),
       projectName: val('l-proj-name') || 'Untitled LAN project',
       status: segValue('l-status'),
-      createdBy: meStamp(),
+      createdBy: selectedAuthor('lan'),
       notes: (val('l-notes') || '').trim(),
       inputs: {
         months: input.months,
@@ -1260,38 +1261,89 @@
     var record = buildWanRecord();
     if (!record) return;
     showResult('wan', record);
-    persistRecord(record);
+    afterCalculate();
   }
 
   function calculateLan() {
     var record = buildLanRecord();
     if (!record) return;
     showResult('lan', record);
-    persistRecord(record);
+    afterCalculate();
   }
 
-  function persistRecord(record) {
-    DB.saveRecord(record).then(function (res) {
-      renderStorageStatus();
-      return DB.listRecords().then(function (rows) {
-        S.records = rows;
-        renderDashboard();
-        if (!res.written) {
-          var needsUpdate = DB.status().updateRequired;
-          U.toast(needsUpdate
-            ? 'Calculation kept in this browser only — this copy of the app must be updated before it can save to the data folder (see the Dashboard).'
-            : 'Calculation saved in this browser. It will be written to the data folder when the app host is running.', 'warn');
-          return;
-        }
-        /* The estimate is on disk; now the project's workbook beside it. */
-        return updateProjectWorkbook(record.projectName, record.createdBy, { silent: true }).then(function (wbk) {
-          var where = (onTeamFolder() ? 'SharePoint' : 'the data folder') + ' › ' + D.projectFolderName(record.projectName);
-          if (wbk && wbk.written) U.toast('Saved to ' + where + ': the estimate and “' + wbk.name + '”.', 'ok');
-          else if (wbk && wbk.error) U.toast('Estimate saved to ' + where + ', but the Excel workbook could not be updated: ' + wbk.error, 'warn');
-          else U.toast('Calculation saved to ' + res.file, 'ok');
+  /* Calculating no longer saves anything - saving is a separate, explicit
+     choice (Save on this device, or Save to SharePoint). */
+  function afterCalculate() {
+    U.toast('Calculated — nothing saved yet. Use 💾 Save (this device) or ☁ Save to SharePoint.', 'ok');
+  }
+
+  function refreshAfterSave() {
+    renderStorageStatus();
+    return DB.listRecords().then(function (rows) {
+      S.records = rows;
+      renderRecords(); renderInsights(); renderDashboard();
+    });
+  }
+
+  /* The Save buttons act on the current calculated record, so saving to this
+     device and then to SharePoint updates the one record rather than making
+     two. The author is re-read from the "Calculated by" picker at save time. */
+  function saveEstimate(side, toSharePoint) {
+    var rec = sideState(side).record;
+    if (!rec) { U.toast('Press Calculate first, then Save.', 'warn'); return; }
+    /* Capture the latest author and notes from the form onto the record. */
+    rec.createdBy = selectedAuthor(side);
+    rec.notes = (val(prefix(side) + '-notes') || '').trim();
+    if (toSharePoint) { publishEstimate(rec); return; }
+    DB.saveRecord(rec, { localOnly: true }).then(function () {
+      refreshAfterSave().then(function () {
+        U.toast('Saved on this device' + (rec.createdBy ? ' by ' + personName(rec.createdBy) : '') +
+                '. Find it in FTE Records.', 'ok');
+      });
+    });
+  }
+
+  function publishEstimate(rec) {
+    return ensureSharedBackend().then(function (shared) {
+      if (!shared) {
+        U.toast('To save to SharePoint, connect the team folder first — opening Settings.', 'warn');
+        gotoPage('settings');
+        return;
+      }
+      return DB.saveRecord(rec).then(function (res) {
+        return refreshAfterSave().then(function () {
+          if (res.written) {
+            updateProjectWorkbook(rec.projectName, rec.createdBy, { silent: true });
+            U.toast('Saved to SharePoint — everyone with the team folder can see it in FTE Records.', 'ok');
+          } else {
+            U.toast('Saved here; it will reach SharePoint once the folder is writable again.', 'warn');
+          }
         });
       });
     });
+  }
+
+  /* Ensure a shared disk backend is connected before publishing. The launcher
+     links the SharePoint team folder by itself; the website (Chrome/Edge) asks
+     the user to pick it once. Resolves to whether a shared location is ready. */
+  function ensureSharedBackend() {
+    var st = DB.status();
+    if (st.shared) return Promise.resolve(true);
+    if (st.mode === 'host') {
+      return autoLinkTeamFolder().then(function () { return DB.status().shared; });
+    }
+    if (DB.folderSupported && DB.folderSupported()) {
+      return DB.connectFolder().then(function () {
+        return DB.pullProjectsFromDisk().catch(function () {}).then(function () {
+          return Promise.all([DB.listRecords(), DB.listProjects()]);
+        }).then(function (lists) {
+          S.records = lists[0]; S.projects = lists[1]; S.plan.team = null;
+          renderRecords(); renderInsights(); renderProjects(); renderDashboard(); renderStorageStatus();
+          return DB.status().shared;
+        });
+      }, function () { return false; });   // picker cancelled
+    }
+    return Promise.resolve(false);
   }
 
   /* ---------------------------------------------------- project workbook -- */
@@ -1828,13 +1880,16 @@
       U.toast('Loaded “' + scn.label + '” into the form. Change a condition and press ➕ Add to comparison for a new variant.', 'ok');
     } else if (act === 'promote') {
       U.confirm('Save “' + scn.label + '” as the estimate?',
-        'It will be saved for “' + (scn.record.projectName || 'this project') + '” and written to the data folder like a normal calculation. ' +
-        'The other scenarios stay in the comparison.', { confirmLabel: 'Save as estimate' })
+        'It will be saved on this device for “' + (scn.record.projectName || 'this project') + '” and appear in FTE Records. ' +
+        'Use ☁ Save to SharePoint on the ' + side.toUpperCase() + ' page to share it with the team. The other scenarios stay in the comparison.',
+        { confirmLabel: 'Save as estimate' })
         .then(function (yes) {
           if (!yes) return;
           var rec = scn.record;
           showResult(side, rec);
-          persistRecord(rec);
+          DB.saveRecord(rec, { localOnly: true }).then(function () {
+            return refreshAfterSave().then(function () { U.toast('Saved on this device. Find it in FTE Records.', 'ok'); });
+          });
         });
     }
   }
@@ -2331,7 +2386,7 @@
     var rec = side === 'wan' ? buildWanRecord() : buildLanRecord();
     if (!rec) return null;
     showResult(side, rec);
-    persistRecord(rec);
+    DB.saveRecord(rec, { localOnly: true }).then(refreshAfterSave);   // the assistant saves on this device
     return rec;
   }
 
@@ -2756,14 +2811,21 @@
     }
 
     host.innerHTML = '<div class="record-list">' + list.map(function (r) {
-      var pending = !r.sync || r.sync.state !== 'saved';
+      var sync = r.sync || {};
+      var whereTag = sync.localOnly
+        ? '<span class="tag tag-muted" title="Saved on this device only. Use Save to SharePoint to share it with the team.">this device</span>'
+        : (sync.state === 'saved' && sync.shared
+            ? '<span class="tag tag-ok" title="Saved to the shared SharePoint team folder — visible to the team.">SharePoint</span>'
+            : (sync.state === 'saved'
+                ? '<span class="tag tag-muted" title="Saved to this app’s data folder (not the shared team folder).">saved</span>'
+                : '<span class="tag tag-warn" title="Not yet written to the shared folder.">not shared</span>'));
       return '<div class="record-item" data-record-id="' + esc(r.id) + '">' +
         '<div class="record-main">' +
           '<div class="record-title-row">' +
             '<span class="record-name">' + esc(r.projectName) + '</span>' +
             '<span class="tag ' + (r.type === 'WAN' ? 'tag-info' : 'tag-ok') + '">' + esc(r.type) + '</span>' +
             '<span class="tag tag-muted">' + esc(r.status || '—') + '</span>' +
-            (pending ? '<span class="tag tag-warn" title="Not yet written to the data folder">browser only</span>' : '') +
+            whereTag +
           '</div>' +
           '<div class="record-meta">' +
             '<span class="record-code">' + esc(r.projectCode) + '</span>' +
@@ -3545,6 +3607,7 @@
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
         outOfHours: segValue('w-oobh'), country: val('w-country'), languages: selectedLangs('wan'),
+        author: val('w-author'),
         distribution: segValue('w-dist'), notes: (val('w-notes') || '').trim(),
         rows: S.wan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.wan.dpms.map(function (d) { return Object.assign({}, d); })
@@ -3557,6 +3620,7 @@
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
         outOfHours: segValue('l-oobh'), country: val('l-country'), languages: selectedLangs('lan'),
+        author: val('l-author'),
         distribution: segValue('l-dist'), notes: (val('l-notes') || '').trim(),
         rows: S.lan.rows.map(function (r) { return Object.assign({}, r); }),
         dpms: S.lan.dpms.map(function (d) { return Object.assign({}, d); })
@@ -3591,6 +3655,7 @@
     if (w.mode) setSeg('w-mode', w.mode);
     if (w.outOfHours) setSeg('w-oobh', w.outOfHours);
     setVal('w-country', w.country || '');
+    if (w.author) { setVal('w-author', w.author); var wauth = el('w-author'); if (wauth) wauth.setAttribute('data-userpick', '1'); }
     setLangChips('wan', w.languages);
     setSeg('w-dist', w.distribution === 'bell' ? 'bell' : 'flat');
     setVal('w-notes', w.notes || '');
@@ -3609,6 +3674,7 @@
     setVal('l-fb-ovrd', l.fallbackOverride || '');
     if (l.outOfHours) setSeg('l-oobh', l.outOfHours);
     setVal('l-country', l.country || '');
+    if (l.author) { setVal('l-author', l.author); var lauth = el('l-author'); if (lauth) lauth.setAttribute('data-userpick', '1'); }
     setLangChips('lan', l.languages);
     setSeg('l-dist', l.distribution === 'bell' ? 'bell' : 'flat');
     setVal('l-notes', l.notes || '');
@@ -3862,6 +3928,60 @@
 
   function personName(p) { return p ? (p.name || p.email || '') : ''; }
 
+  /* ------------------------------------------------ "Calculated by" ------- */
+
+  /* Fill the author <select> with "you" plus everyone in the DPM Directory,
+     keyed by email. Keeps the current choice if it is still valid. */
+  function renderAuthorPicker(side) {
+    var sel = el(prefix(side) + '-author'); if (!sel) return;
+    /* Remember only a DELIBERATE user choice, so a value set before identity
+       resolved at startup (when "you" is not yet known) cannot latch and
+       mis-attribute every estimate to the first DPM in the directory. */
+    if (!sel.getAttribute('data-bound')) {
+      sel.setAttribute('data-bound', '1');
+      sel.addEventListener('change', function () { sel.setAttribute('data-userpick', '1'); });
+    }
+    var userPicked = sel.getAttribute('data-userpick') === '1';
+    var cur = sel.value;
+    var me = meStamp();
+    var opts = [], seen = {};
+    if (me) {
+      var mk = String(me.email || '').toLowerCase();
+      opts.push({ value: me.email || '', label: (me.name || me.email || 'You') + ' (you)' });
+      if (mk) seen[mk] = true;
+    } else {
+      /* No identity yet: a neutral blank so createdBy stays "not recorded"
+         (via selectedAuthor -> meStamp() === null) rather than a random DPM. */
+      opts.push({ value: '', label: '— set your name in Settings —' });
+    }
+    (D.DPMS || []).forEach(function (d) {
+      var k = String(d.email || '').toLowerCase();
+      if (!d.email || seen[k]) return;
+      seen[k] = true;
+      opts.push({ value: d.email, label: d.name || d.email });
+    });
+    sel.innerHTML = opts.map(function (o) {
+      return '<option value="' + esc(o.value) + '">' + esc(o.label) + '</option>';
+    }).join('');
+    /* An untouched picker always follows the identity ("you"); only a value the
+       user actually chose (or a loaded project's author) is preserved. */
+    var values = opts.map(function (o) { return o.value; });
+    sel.value = (userPicked && cur && values.indexOf(cur) >= 0) ? cur
+              : (me && me.email ? me.email : opts[0].value);
+  }
+
+  /* The author chosen on the form, as a { name, email } stamp. */
+  function selectedAuthor(side) {
+    var sel = el(prefix(side) + '-author');
+    var v = sel ? String(sel.value || '') : '';
+    if (!v) return meStamp();
+    var key = v.toLowerCase();
+    var me = meStamp();
+    if (me && String(me.email || '').toLowerCase() === key) return me;
+    var dpm = (D.DPMS || []).filter(function (d) { return String(d.email || '').toLowerCase() === key; })[0];
+    return dpm ? { name: dpm.name, email: dpm.email } : (me || null);
+  }
+
   /* Asked once, the first time someone calculates without the launcher
      having recognised them. Skipping is allowed - estimates then simply show
      no creator. */
@@ -3922,6 +4042,7 @@
   }
 
   function renderIdentity() {
+    renderAuthorPicker('wan'); renderAuthorPicker('lan');   // "Calculated by" defaults follow the identity
     if (!el('set-user-name')) return;
     el('set-user-dpms').innerHTML = D.DPMS.map(function (d) { return '<option value="' + esc(d.name) + '">'; }).join('');
     /* Unsaved typing survives any re-render; otherwise show what is saved. */
@@ -5000,6 +5121,7 @@
       D.COUNTRIES.forEach(function (c) { sel.add(new Option(c.name, c.code)); });
     });
     renderLangChips('wan'); renderLangChips('lan');
+    renderAuthorPicker('wan'); renderAuthorPicker('lan');
     updateOobhHelp();
   }
 
@@ -5161,6 +5283,8 @@
       });
     });
     el('w-calculate').addEventListener('click', function () { ensureIdentity().then(calculateWan); });
+    el('w-save').addEventListener('click', function () { ensureIdentity().then(function () { saveEstimate('wan', false); }); });
+    el('w-save-sp').addEventListener('click', function () { ensureIdentity().then(function () { saveEstimate('wan', true); }); });
     el('w-export').addEventListener('click', function () {
       if (!S.wan.record) { U.toast('Run a WAN calculation first.', 'warn'); return; }
       syncActiveNotes('wan').then(function () { EX.exportRecord(S.wan.record); });
@@ -5188,6 +5312,8 @@
       });
     });
     el('l-calculate').addEventListener('click', function () { ensureIdentity().then(calculateLan); });
+    el('l-save').addEventListener('click', function () { ensureIdentity().then(function () { saveEstimate('lan', false); }); });
+    el('l-save-sp').addEventListener('click', function () { ensureIdentity().then(function () { saveEstimate('lan', true); }); });
     el('l-export').addEventListener('click', function () {
       if (!S.lan.record) { U.toast('Run a LAN calculation first.', 'warn'); return; }
       syncActiveNotes('lan').then(function () { EX.exportRecord(S.lan.record); });
