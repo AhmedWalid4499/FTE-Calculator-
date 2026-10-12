@@ -282,6 +282,9 @@ body {
 .segmented button:hover { color: var(--text-2); }
 .segmented button.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); border-color: var(--border); }
 [data-theme="dark"] .segmented button.active { background: var(--surface-3); }
+/* Tab-strip variant: sizes to its content instead of stretching full width. */
+.segmented-tabs { display: inline-flex; }
+.segmented-tabs button { flex: 0 0 auto; padding: 7px 16px; }
 
 /* ============================================================= buttons === */
 

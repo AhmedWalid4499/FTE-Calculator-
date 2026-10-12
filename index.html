@@ -232,15 +232,6 @@
             </div>
             <span class="field-help" id="w-mode-help">Rates come from the published rate card.</span>
           </div>
-          <div class="field">
-            <span class="field-label" data-help="outOfHours">Out of business hours</span>
-            <div class="segmented" id="w-oobh" role="group" aria-label="Out of business hours">
-              <button type="button" data-val="Not known" class="active">Not known</button>
-              <button type="button" data-val="No">No</button>
-              <button type="button" data-val="Yes">Yes</button>
-            </div>
-            <span class="field-help">Yes adds the out-of-hours uplift (<b id="w-oobh-pct">15</b>%), set in Settings.</span>
-          </div>
         </div>
 
         <div class="callout neutral">
@@ -260,11 +251,11 @@
             </div>
           </div>
           <div class="field">
-            <label for="w-country" data-help="country">Project HQ country <span class="tag tag-muted">recorded only</span></label>
+            <label for="w-country" data-help="country">Project HQ country <span class="tag tag-info">on the map</span></label>
             <select id="w-country"><option value="">— Select —</option></select>
           </div>
           <div class="field">
-            <label for="w-cluster" data-help="salesCluster">Sales cluster <span class="tag tag-muted">recorded only</span></label>
+            <label for="w-cluster" data-help="salesCluster">Sales cluster <span class="tag tag-info">on the map</span></label>
             <select id="w-cluster"><option value="">— Select —</option></select>
           </div>
         </div>
@@ -506,22 +497,13 @@
         </div>
 
         <div class="divider"><span>Project profile</span></div>
-        <div class="grid g3">
+        <div class="grid g2">
           <div class="field">
-            <span class="field-label" data-help="outOfHours">Out of business hours <span class="tag tag-muted">affects effort</span></span>
-            <div class="segmented" id="l-oobh" role="group" aria-label="Out of business hours">
-              <button type="button" data-val="Not known" class="active">Not known</button>
-              <button type="button" data-val="No">No</button>
-              <button type="button" data-val="Yes">Yes</button>
-            </div>
-            <span class="field-help">Yes adds the out-of-hours uplift (<b id="l-oobh-pct">15</b>%), set in Settings.</span>
-          </div>
-          <div class="field">
-            <label for="l-country" data-help="country">Project HQ country <span class="tag tag-muted">recorded only</span></label>
+            <label for="l-country" data-help="country">Project HQ country <span class="tag tag-info">on the map</span></label>
             <select id="l-country"><option value="">— Select —</option></select>
           </div>
           <div class="field">
-            <label for="l-cluster" data-help="salesCluster">Sales cluster <span class="tag tag-muted">recorded only</span></label>
+            <label for="l-cluster" data-help="salesCluster">Sales cluster <span class="tag tag-info">on the map</span></label>
             <select id="l-cluster"><option value="">— Select —</option></select>
           </div>
         </div>
@@ -717,7 +699,11 @@
     <section class="page" id="page-map">
       <div class="page-head">
         <h2>Project map</h2>
-        <p>Where the saved estimates are, by project HQ country. Bigger circles mean more projects there. The map needs an internet connection to load.</p>
+        <p>Where the saved projects are. Switch between <b>By country HQ</b> (each project's HQ country) and <b>By cluster</b> (the sales cluster the deal came from). Bigger circles mean more projects — or more FTE. The map needs an internet connection to load.</p>
+      </div>
+      <div class="segmented segmented-tabs mb-3" id="map-mode" role="group" aria-label="Map grouping">
+        <button type="button" data-val="country" class="active">By country HQ</button>
+        <button type="button" data-val="cluster">By cluster</button>
       </div>
       <div class="card">
         <div class="card-head"><div class="card-title"><span class="dot"></span>Filter</div>
@@ -987,11 +973,6 @@
             <label for="set-complexity">Default complexity %</label>
             <input type="number" id="set-complexity" min="1" max="500" step="1">
             <span class="field-help">Pre-filled on new allocation rows. Default 100.</span>
-          </div>
-          <div class="field">
-            <label for="set-oobh" data-help="oobhUplift">Out-of-hours uplift %</label>
-            <input type="number" id="set-oobh" min="0" max="200" step="1">
-            <span class="field-help">Added to an estimate when "Out of business hours" is Yes. Default 15. Set 0 to disable.</span>
           </div>
         </div>
         <div class="btn-row">

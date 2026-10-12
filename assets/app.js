@@ -1123,7 +1123,6 @@
       totalSites: numVal('w-sites'),
       mode: segValue('w-mode'),
       migration: segValue('w-migration'),
-      outOfHours: segValue('w-oobh'),
       distribution: segValue('w-dist'),
       allocation: S.wan.rows.map(function (r) { return Object.assign({}, r); })
     };
@@ -1137,7 +1136,6 @@
       mode: segValue('l-mode'),
       stages: selectedStages(),
       fallbackOverride: numVal('l-fb-ovrd') || null,
-      outOfHours: segValue('l-oobh'),
       distribution: segValue('l-dist'),
       allocation: S.lan.rows.map(function (r) { return Object.assign({}, r); })
     };
@@ -1175,7 +1173,6 @@
         totalSites: input.totalSites,
         mode: input.mode,
         migration: input.migration,
-        outOfHours: input.outOfHours,
         projectType: val('w-type'),
         abacos: segValue('w-abacos'),
         pmRole: segValue('w-pm-role'),
@@ -1184,7 +1181,6 @@
         languages: selectedLangs('wan'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
         migrationMdPerSite: S.settings.migrationMdPerSite,
-        oobhUpliftPct: S.settings.oobhUpliftPct,
         distribution: result.distribution,
         allocation: input.allocation
       },
@@ -1230,14 +1226,12 @@
         mode: input.mode,
         stages: input.stages,
         fallbackOverride: input.fallbackOverride,
-        outOfHours: input.outOfHours,
         flan: segValue('l-flan'),
         pmRole: segValue('l-pm-role'),
         country: val('l-country'),
         salesCluster: val('l-cluster'),
         languages: selectedLangs('lan'),
         capacityMdPerMonth: S.settings.capacityMdPerMonth,
-        oobhUpliftPct: S.settings.oobhUpliftPct,
         distribution: result.distribution,
         allocation: input.allocation
       },
@@ -1962,12 +1956,11 @@
       renderStageSummary();
     }
 
-    /* The profile fields added later (country, sales cluster, out-of-hours,
-       languages, author) are restored here too, for both sides. */
+    /* The profile fields added later (country, sales cluster, languages,
+       author) are restored here too, for both sides. */
     var p = prefix(side);
     setVal(p + '-country', i.country || '');
     setVal(p + '-cluster', i.salesCluster || '');
-    if (i.outOfHours) setSeg(p + '-oobh', i.outOfHours);
     setLangChips(side, i.languages);
     if (rec.createdBy && rec.createdBy.email) {
       var authSel = el(p + '-author');
@@ -2884,7 +2877,6 @@
     infoRows = infoRows.concat([
       ['HQ country', i.country ? D.countryName(i.country) : ''],
       ['Sales cluster', i.salesCluster],
-      ['Out of business hours', i.outOfHours],
       ['Required languages', (i.languages || []).join(', ')]
     ]);
 
@@ -3052,8 +3044,7 @@
     if (type === 'WAN') {
       input = {
         months: +side.months || 0, totalSites: sites, mode: side.mode,
-        migration: side.migration, outOfHours: side.outOfHours,
-        distribution: side.distribution,
+        migration: side.migration, distribution: side.distribution,
         allocation: rows.map(function (r) { return Object.assign({}, r); })
       };
       result = C.calculateWan(input, S.settings);
@@ -3061,7 +3052,7 @@
       input = {
         months: +side.months || 0, totalSites: sites, devices: +side.devices || 0,
         mode: side.mode, stages: side.stages || [], fallbackOverride: side.fallbackOverride || null,
-        outOfHours: side.outOfHours, distribution: side.distribution,
+        distribution: side.distribution,
         allocation: rows.map(function (r) { return Object.assign({}, r); })
       };
       result = C.calculateLan(input, S.settings);
@@ -3082,8 +3073,7 @@
       createdBy: author,
       notes: side.notes || '',
       inputs: {
-        months: input.months, totalSites: input.totalSites,
-        mode: input.mode, outOfHours: input.outOfHours,
+        months: input.months, totalSites: input.totalSites, mode: input.mode,
         country: side.country || '', salesCluster: side.salesCluster || '',
         languages: side.languages || [], distribution: input.distribution,
         allocation: input.allocation
@@ -3316,48 +3306,67 @@
     });
   }
 
+  /* Two views, chosen by the #map-mode tabs: group the saved projects by HQ
+     country, or by the sales cluster the deal came from. Each group is a
+     circle at that country's / cluster's point, sized by project count or FTE. */
   function drawMapMarkers(L) {
     if (!_map) return;
     if (_mapLayer) { _map.removeLayer(_mapLayer); _mapLayer = null; }
     _mapLayer = L.layerGroup().addTo(_map);
+    var mode = segValue('map-mode') || 'country';
+    var byCluster = mode === 'cluster';
     var metric = val('map-metric') || 'count';
     var recs = mapFilteredRecords();
-    var by = {};
+
+    var by = {}, placed = 0;
     recs.forEach(function (r) {
-      var code = r.inputs && r.inputs.country;
-      if (!code) return;
-      var c = D.country(code); if (!c) return;
-      if (!by[code]) by[code] = { c: c, count: 0, fte: 0, wan: 0, lan: 0, names: [], clusters: {} };
-      var g = by[code];
+      var key, pt, label;
+      if (byCluster) {
+        key = r.inputs && r.inputs.salesCluster;
+        if (!key) return;
+        pt = D.salesClusterCentroid(key); if (!pt) return;
+        label = D.salesClusterName(key) + ' (' + key + ')';
+      } else {
+        key = r.inputs && r.inputs.country;
+        if (!key) return;
+        pt = D.country(key); if (!pt) return;
+        label = pt.name;
+      }
+      if (!by[key]) by[key] = { lat: pt.lat, lon: pt.lon, label: label, count: 0, fte: 0, wan: 0, lan: 0, names: [] };
+      var g = by[key];
       g.count += 1;
       g.fte += (r.results && r.results.fte) || 0;
       if (r.type === 'WAN') g.wan++; else if (r.type === 'LAN') g.lan++;
-      if (r.inputs && r.inputs.salesCluster) g.clusters[r.inputs.salesCluster] = (g.clusters[r.inputs.salesCluster] || 0) + 1;
       if (g.names.length < 12 && g.names.indexOf(r.projectName) < 0) g.names.push(r.projectName);
+      placed += 1;
     });
-    var codes = Object.keys(by);
-    var withCountry = recs.filter(function (r) { return r.inputs && r.inputs.country && D.country(r.inputs.country); }).length;
+
+    var keys = Object.keys(by);
+    var dim = byCluster ? 'cluster' : 'country';
+    var unit = byCluster
+      ? (keys.length === 1 ? 'cluster' : 'clusters')
+      : (keys.length === 1 ? 'country' : 'countries');
     var cc = el('map-count');
-    if (cc) cc.textContent = withCountry + ' of ' + recs.length + ' project(s) have a country · ' + codes.length + ' countr' + (codes.length === 1 ? 'y' : 'ies');
-    if (!codes.length) return;
+    if (cc) cc.textContent = placed + ' of ' + recs.length + ' project(s) have a ' + dim + ' · ' + keys.length + ' ' + unit;
+    if (!keys.length) return;
+
     var maxVal = 1;
-    codes.forEach(function (k) { var v = metric === 'fte' ? by[k].fte : by[k].count; if (v > maxVal) maxVal = v; });
+    keys.forEach(function (k) { var v = metric === 'fte' ? by[k].fte : by[k].count; if (v > maxVal) maxVal = v; });
+    var colour = byCluster ? '#7c3aed' : '#2563eb';   // cluster view in violet, country view in blue
     var pts = [];
-    codes.forEach(function (k) {
+    keys.forEach(function (k) {
       var g = by[k];
       var v = metric === 'fte' ? g.fte : g.count;
       var radius = 8 + 26 * Math.sqrt(v / maxVal);
-      var m = L.circleMarker([g.c.lat, g.c.lon], {
-        radius: radius, color: '#2563eb', weight: 1.5, fillColor: '#2563eb', fillOpacity: 0.45
+      var m = L.circleMarker([g.lat, g.lon], {
+        radius: radius, color: colour, weight: 1.5, fillColor: colour, fillOpacity: 0.45
       });
-      var clusterList = Object.keys(g.clusters);
-      var html = '<div class="map-pop-title">' + esc(g.c.name) + '</div>' +
+      var html = '<div class="map-pop-title">' + esc(g.label) + '</div>' +
         '<div class="map-pop-sub">' + g.count + ' project(s) · ' + g.wan + ' WAN / ' + g.lan + ' LAN · ' + fmt.fte(g.fte) + ' FTE total</div>' +
-        (clusterList.length ? '<div class="map-pop-sub">Sales cluster: ' + esc(clusterList.join(', ')) + '</div>' : '') +
         '<ul class="map-pop-list">' + g.names.map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') + '</ul>';
       m.bindPopup(html);
       m.addTo(_mapLayer);
-      pts.push([g.c.lat, g.c.lon]);
+      pts.push([g.lat, g.lon]);
     });
     if (pts.length === 1) _map.setView(pts[0], 4);
     else _map.fitBounds(pts, { padding: [40, 40], maxZoom: 6 });
@@ -3745,7 +3754,7 @@
         startMonth: val('w-start-month'),
         sites: numVal('w-sites') || null, projectType: val('w-type'),
         migration: segValue('w-migration'), abacos: segValue('w-abacos'), mode: segValue('w-mode'),
-        outOfHours: segValue('w-oobh'), country: val('w-country'), salesCluster: val('w-cluster'),
+        country: val('w-country'), salesCluster: val('w-cluster'),
         languages: selectedLangs('wan'), author: val('w-author'),
         distribution: segValue('w-dist'), notes: (val('w-notes') || '').trim(),
         rows: S.wan.rows.map(function (r) { return Object.assign({}, r); }),
@@ -3758,7 +3767,7 @@
         sites: numVal('l-sites') || null, devices: numVal('l-devices'),
         flan: segValue('l-flan'), mode: segValue('l-mode'), stages: selectedStages(),
         fallbackOverride: numVal('l-fb-ovrd') || null,
-        outOfHours: segValue('l-oobh'), country: val('l-country'), salesCluster: val('l-cluster'),
+        country: val('l-country'), salesCluster: val('l-cluster'),
         languages: selectedLangs('lan'), author: val('l-author'),
         distribution: segValue('l-dist'), notes: (val('l-notes') || '').trim(),
         rows: S.lan.rows.map(function (r) { return Object.assign({}, r); }),
@@ -3792,7 +3801,6 @@
     if (w.migration) setSeg('w-migration', w.migration);
     if (w.abacos) setSeg('w-abacos', w.abacos);
     if (w.mode) setSeg('w-mode', w.mode);
-    if (w.outOfHours) setSeg('w-oobh', w.outOfHours);
     setVal('w-country', w.country || '');
     setVal('w-cluster', w.salesCluster || '');
     if (w.author) { setVal('w-author', w.author); var wauth = el('w-author'); if (wauth) wauth.setAttribute('data-userpick', '1'); }
@@ -3812,7 +3820,6 @@
     if (l.flan) setSeg('l-flan', l.flan);
     if (l.mode) setSeg('l-mode', l.mode);
     setVal('l-fb-ovrd', l.fallbackOverride || '');
-    if (l.outOfHours) setSeg('l-oobh', l.outOfHours);
     setVal('l-country', l.country || '');
     setVal('l-cluster', l.salesCluster || '');
     if (l.author) { setVal('l-author', l.author); var lauth = el('l-author'); if (lauth) lauth.setAttribute('data-userpick', '1'); }
@@ -4432,7 +4439,6 @@
     setVal('set-capacity', S.settings.capacityMdPerMonth);
     setVal('set-migration', S.settings.migrationMdPerSite);
     setVal('set-complexity', S.settings.defaultComplexity);
-    setVal('set-oobh', S.settings.oobhUpliftPct);
     setVal('set-email-to', S.settings.emailTo || '');
     setVal('set-email-cc', S.settings.emailCc || '');
     setVal('set-email-subject', S.settings.emailSubject || '');
@@ -4766,28 +4772,23 @@
     var capacity = numVal('set-capacity');
     var migration = numVal('set-migration');
     var complexity = numVal('set-complexity');
-    var oobh = numVal('set-oobh');
     U.clearFieldErrors();
     if (!(capacity > 0)) { U.showFieldError('set-capacity', 'Capacity must be greater than zero.'); return; }
     if (migration < 0) { U.showFieldError('set-migration', 'The migration uplift cannot be negative.'); return; }
     if (!(complexity > 0)) { U.showFieldError('set-complexity', 'Default complexity must be greater than zero.'); return; }
-    if (oobh < 0) { U.showFieldError('set-oobh', 'The out-of-hours uplift cannot be negative.'); return; }
 
     S.settings.capacityMdPerMonth = capacity;
     S.settings.migrationMdPerSite = migration;
     S.settings.defaultComplexity = complexity;
-    S.settings.oobhUpliftPct = oobh;
 
     Promise.all([
       DB.setSetting('capacityMdPerMonth', capacity),
       DB.setSetting('migrationMdPerSite', migration),
-      DB.setSetting('defaultComplexity', complexity),
-      DB.setSetting('oobhUpliftPct', oobh)
+      DB.setSetting('defaultComplexity', complexity)
     ]).then(function () {
       referenceBuilt = false;
       U.toast('Settings saved. They apply to new calculations.', 'ok');
       updateMigrationHelp();
-      updateOobhHelp();
     });
   }
 
@@ -5321,7 +5322,6 @@
     });
     renderLangChips('wan'); renderLangChips('lan');
     renderAuthorPicker('wan'); renderAuthorPicker('lan');
-    updateOobhHelp();
   }
 
   /* Required-language chips (recorded only), one toggle per language. */
@@ -5344,12 +5344,6 @@
       n.classList.toggle('checked', on); n.setAttribute('aria-pressed', String(on));
     });
   }
-  function updateOobhHelp() {
-    var p = S.settings.oobhUpliftPct;
-    if (p === undefined || p === null) p = D.DEFAULT_SETTINGS.oobhUpliftPct;
-    ['w-oobh-pct', 'l-oobh-pct'].forEach(function (id) { var e = el(id); if (e) e.textContent = p; });
-  }
-
   function bindEvents() {
     /* Navigation and segmented controls are handled by delegation so nothing
        depends on inline handlers or on markup rendered later. */
@@ -5365,6 +5359,7 @@
         if (group.id === 'w-mode') syncModeUi('wan');
         if (group.id === 'l-mode') syncModeUi('lan');
         if (group.id === 'cap-inactive') renderCapacity();
+        if (group.id === 'map-mode') renderMap();
         return;
       }
 
@@ -5771,7 +5766,6 @@
         setVal('w-add-complexity', S.settings.defaultComplexity);
         setVal('l-add-complexity', S.settings.defaultComplexity);
         updateMigrationHelp();
-        updateOobhHelp();
         return resolveIdentity();
       })
       /* With the launcher, link the synced SharePoint team folder by itself. */

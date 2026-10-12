@@ -617,10 +617,14 @@
       inputFacts.splice(6, 0, ['Priced from', r.usedTierRows ? 'Tier rows' : ('Fallback tier ' + (r.fallbackTier || '')),
         r.usedTierRows ? 'Each tier row priced separately' : 'All sites priced at one tier']);
     }
-    inputFacts.push(['Out of business hours', i.outOfHours || 'Not known',
-      i.outOfHours === 'Yes'
-        ? ('Adds ' + (i.oobhUpliftPct != null ? i.oobhUpliftPct : '') + '% to the effort')
-        : 'No uplift applied']);
+    /* Older records may carry an out-of-hours flag; newer ones do not (the
+       option was removed). Only show the line when it was actually recorded. */
+    if (i.outOfHours) {
+      inputFacts.push(['Out of business hours', i.outOfHours,
+        i.outOfHours === 'Yes'
+          ? ('Adds ' + (i.oobhUpliftPct != null ? i.oobhUpliftPct : '') + '% to the effort')
+          : 'No uplift applied']);
+    }
     inputFacts.push(['Effort distribution',
       isShaped(r) ? 'Bell curve (normal)' : 'Flat (even)',
       isShaped(r) ? 'Man-days ramp to a mid-project peak and back down'

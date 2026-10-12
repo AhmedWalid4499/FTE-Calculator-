@@ -194,6 +194,23 @@
      the Project map. */
   var SALES_CLUSTERS = ['SE', 'NWE', 'Benelux', 'GEA', 'Swiss', 'MEA', 'AMER', 'APAC'];
 
+  /* Approximate geographic centre of each sales cluster, for the "By cluster"
+     view of the Project map (a cluster is a region, not a single place, so
+     these are representative points and easy to adjust). name is the full
+     label shown in the popup. */
+  var SALES_CLUSTER_CENTROIDS = {
+    'SE':      { lat: 41.90, lon: 12.50,  name: 'Southern Europe' },            // Rome
+    'NWE':     { lat: 48.85, lon:  2.35,  name: 'North-West Europe' },          // Paris
+    'Benelux': { lat: 50.85, lon:  4.35,  name: 'Benelux' },                    // Brussels
+    'GEA':     { lat: 48.21, lon: 16.37,  name: 'Germany, Eastern Europe & Austria' }, // Vienna
+    'Swiss':   { lat: 47.37, lon:  8.54,  name: 'Switzerland' },                // Zurich
+    'MEA':     { lat: 25.20, lon: 55.27,  name: 'Middle East & Africa' },       // Dubai
+    'AMER':    { lat: 39.80, lon: -98.60, name: 'Americas' },                   // central USA
+    'APAC':    { lat:  1.35, lon: 103.82, name: 'Asia Pacific' }                // Singapore
+  };
+  function salesClusterCentroid(code) { return SALES_CLUSTER_CENTROIDS[code] || null; }
+  function salesClusterName(code) { var c = SALES_CLUSTER_CENTROIDS[code]; return c ? c.name : (code || ''); }
+
   /* Country list (code/name/lat/lon) for the Country field and the Map tab,
      loaded from assets/countries.js just before this file. */
   var COUNTRIES = (global.FTE_COUNTRIES || []).slice();
@@ -208,7 +225,6 @@
     capacityMdPerMonth: 18,   // productive man-days one full-time DPM delivers per month
     defaultComplexity: 100,   // percent
     migrationMdPerSite: 0.5,  // uplift applied per site when WAN migration support is in scope
-    oobhUpliftPct: 15,        // % added to the effort when out-of-business-hours work is in scope
     dateDaysPerMonth: 30.44,  // average calendar month, used to convert a date range to months
     emailTo: '',              // default recipient for the result email (blank = fill in Outlook)
     emailCc: 'karim.elzarka.ext@orange.com',
@@ -309,10 +325,8 @@
     totalSites:   'The number of sites in the whole project. Your allocation rows must add up to exactly this number before the estimate will run - that check is what stops sites being double-counted or forgotten.',
     projectType:  'Overlay, Underlay or Both. Recorded for reporting only - it does not change the calculated effort.',
     migration:    'When migration support is in scope, an extra 0.5 man-days per site is added on top of the product effort, covering cut-over coordination and rollback readiness.',
-    outOfHours:   'Whether the work must happen outside normal business hours (nights/weekends). "Yes" adds an effort uplift (set in Settings, default 15%) on top of the base effort, for the extra coordination and unsocial-hours overhead. "No" and "Not known" add nothing.',
-    oobhUplift:   'The percentage added to an estimate when "Out of business hours" is set to Yes. Applied to the base effort (plus any WAN migration uplift). Set to 0 to record out-of-hours work without changing the effort.',
-    country:      'The country where the project HQ is. Recorded on the estimate and used to place it on the Project map. It does not change the calculated effort.',
-    salesCluster: 'The sales cluster the deal came from (SE, NWE, Benelux, GEA, Swiss, MEA, AMER, APAC). Recorded on the estimate and shown on the Project map; it does not change the calculated effort.',
+    country:      'The country where the project HQ is. Used to place the project on the Project map (the "By country HQ" view). It does not change the calculated effort.',
+    salesCluster: 'The sales cluster the deal came from (SE, NWE, Benelux, GEA, Swiss, MEA, AMER, APAC). Used to place the project on the Project map (the "By cluster" view). It does not change the calculated effort.',
     languages:    'Languages the assigned DPM or PM needs to speak for this project. Recorded for staffing and shown in exports and on the map; it does not change the effort. Select none for no specific requirement.',
     abacos:       'Records whether ABACOS applies. Recorded only - it does not change the calculated effort.',
     flan:         'Records whether FLAN is used. Recorded only - it does not change the calculated effort.',
@@ -405,6 +419,9 @@
     DPM_ROLES: DPM_ROLES,
     LANGUAGES: LANGUAGES,
     SALES_CLUSTERS: SALES_CLUSTERS,
+    SALES_CLUSTER_CENTROIDS: SALES_CLUSTER_CENTROIDS,
+    salesClusterCentroid: salesClusterCentroid,
+    salesClusterName: salesClusterName,
     COUNTRIES: COUNTRIES,
     countryName: countryName,
     country: country,
