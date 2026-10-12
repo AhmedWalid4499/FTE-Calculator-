@@ -14,9 +14,21 @@
    folder raises it for everyone, and it is never lowered again.
    =========================================================================== */
 window.FTE_RELEASES = /*JSON*/{
-  "version": "2.7.0",
+  "version": "2.8.0",
   "folderMinVersion": "2.2.0",
   "releases": [
+    {
+      "version": "2.8.0",
+      "date": "2026-10-12",
+      "title": "Clearer saving — this device, or SharePoint",
+      "features": [
+        "Calculating no longer saves by itself. Press Calculate to see the result, then choose whether and where to keep it — no more wondering what got saved.",
+        "Two clear save buttons on the WAN and LAN pages: 💾 Save keeps the estimate on this device, and ☁ Save to SharePoint publishes it to the shared team folder so everyone can see it.",
+        "Choose who did it: a new 'Calculated by' picker (defaults to you, or pick a colleague from the DPM Directory) stamps the author on every saved estimate, so FTE Records clearly shows who did what.",
+        "FTE Records now shows where each estimate lives — 'this device', 'SharePoint', or 'not shared' — next to who calculated it.",
+        "Saving the same estimate to this device and then to SharePoint updates the one record rather than creating a duplicate."
+      ]
+    },
     {
       "version": "2.7.0",
       "date": "2026-10-07",
